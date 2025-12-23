@@ -130,23 +130,22 @@ export default function SectionsPanel(props: Props) {
     return Array.from(new Set(ids));
   }, [effectiveRoots, childrenByParent]);
 
+  // ✅ Stable signature to avoid resetting open state on every render
+  const idsSig = useMemo(() => {
+    return `${groupIds.join("|")}::${allSectionIds.join("|")}`;
+  }, [groupIds, allSectionIds]);
+
   // ---- Reset open states on parse/adjust (sections change) ----
-  useEffect(() => {
-    setOpenGroups((prev) => {
-      const next: Record<string, boolean> = {};
-      for (const gid of groupIds) next[gid] = prev[gid] ?? false; // default collapsed
-      return next;
-    });
+useEffect(() => {
+  setOpenById((prev) => {
+    const next: Record<string, boolean> = {};
+    for (const id of allSectionIds) next[id] = prev[id] ?? false;
+    return next;
+  });
 
-    setOpenById((prev) => {
-      const next: Record<string, boolean> = {};
-      for (const id of allSectionIds) next[id] = prev[id] ?? false; // default collapsed
-      return next;
-    });
-  }, [groupIds, allSectionIds, setOpenGroups, setOpenById]);
-
-  const toggleGroup = (groupId: string) =>
-    setOpenGroups((prev) => ({ ...prev, [groupId]: !(prev[groupId] ?? false) }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [idsSig]);
+  
 
   const toggleSection = (id: string) =>
     setOpenById((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
@@ -216,58 +215,62 @@ export default function SectionsPanel(props: Props) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-6">
       {/* ===== Action Bar ===== */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              if (!sections.length) {
-                setNotice("No CV sections yet. Please parse the CV first.");
-                return;
-              }
-              setCvSectionsConfirmed(true);
-              setNotice(
-                "CV sections confirmed. You can now Generate Preview / Replace All / Export."
-              );
-            }}
-            disabled={autoOptimizing || parseBusy || !sections.length}
-            className={`${ui.BTN_BASE} ${ui.BTN_SM} ${
-              cvSectionsConfirmed
-                ? "bg-emerald-600 text-white hover:brightness-105 ring-1 ring-emerald-600/10"
-                : "bg-amber-500 text-amber-950 hover:brightness-105 ring-1 ring-amber-500/20"
-            }`}
-          >
-            {cvSectionsConfirmed ? "CV Sections Confirmed" : "Please Confirm Sections"}
-          </button>
+      <div className="sticky top-3 z-30 -mx-1 rounded-xl border border-slate-200 bg-white/90 px-1 py-2 backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (!sections.length) {
+                  setNotice("No CV sections yet. Please parse the CV first.");
+                  return;
+                }
+                setCvSectionsConfirmed(true);
+                setNotice(
+                  "CV sections confirmed. You can now Generate Preview / Replace All / Export."
+                );
+              }}
+              disabled={autoOptimizing || parseBusy || !sections.length}
+              className={`${ui.BTN_BASE} ${ui.BTN_SM} ${
+                cvSectionsConfirmed
+                  ? "bg-emerald-700 text-white hover:brightness-105 ring-1 ring-emerald-700/15"
+                  : "bg-emerald-600 text-white hover:brightness-105 ring-1 ring-emerald-600/15"
+              }`}
+            >
+              {cvSectionsConfirmed ? "CV Sections Confirmed" : "Confirm Sections"}
+            </button>
 
-          <button
-            type="button"
-            onClick={onAdjustStructure}
-            disabled={autoOptimizing || parseBusy || !sections.length}
-            className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_OUTLINE}`}
-          >
-            Adjust structure
-          </button>
+            <button
+              type="button"
+              onClick={onAdjustStructure}
+              disabled={autoOptimizing || parseBusy || !sections.length}
+              className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_OUTLINE}`}
+            >
+              Adjust structure
+            </button>
 
-          <button
-            type="button"
-            onClick={onReplaceAll}
-            disabled={replaceAllDisabled || !cvSectionsConfirmed}
-            className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_PRIMARY} ${gateDeemphasis}`}
-          >
-            Replace All
-          </button>
+            <button
+              type="button"
+              onClick={onReplaceAll}
+              disabled={replaceAllDisabled || !cvSectionsConfirmed}
+              className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_PRIMARY} ${gateDeemphasis}`}
+            >
+              Replace All
+            </button>
 
-          <button
-            type="button"
-            onClick={onGeneratePreview}
-            disabled={previewBusy || autoOptimizing || parseBusy || !cvSectionsConfirmed}
-            className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_SECONDARY} ${gateDeemphasis}`}
-          >
-            {previewBusy ? "Generating…" : "Generate Preview"}
-          </button>
+            <button
+              type="button"
+              onClick={onGeneratePreview}
+              disabled={previewBusy || autoOptimizing || parseBusy || !cvSectionsConfirmed}
+              className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_SECONDARY} ${gateDeemphasis}`}
+            >
+              {previewBusy ? "Generating…" : "Generate Preview"}
+            </button>
+          </div>
         </div>
       </div>
+
+
 
       {/* ===== Sections ===== */}
       <div className="space-y-6">
@@ -293,28 +296,16 @@ export default function SectionsPanel(props: Props) {
             );
           }
 
-          // Normal case: show group header + children list
-          const isGroupOpen = openGroups[root.id] ?? false;
-
+          // ✅ Normal group case: show parent as plain heading (no border/radius/bg) + children list
           return (
-            <div key={root.id} className="space-y-4">
-              <button
-                type="button"
-                onClick={() => toggleGroup(root.id)}
-                className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-semibold hover:bg-slate-50"
-                title={isGroupOpen ? "Collapse group" : "Expand group"}
-              >
-                <span className="truncate">{root.title}</span>
-                <span className="ml-3 shrink-0 text-xs font-semibold text-slate-500">
-                  {isGroupOpen ? "Hide" : "Show"}
-                </span>
-              </button>
+            <div key={root.id} className="space-y-3">
+              <div className="px-1 text-sm font-bold tracking-wide text-slate-700">
+                {root.title}
+              </div>
 
-              {isGroupOpen ? (
-                <div className="space-y-4">
-                  {children.map((c) => renderCollapsibleSection(c, undefined, false))}
-                </div>
-              ) : null}
+              <div className="space-y-4">
+                {children.map((c) => renderCollapsibleSection(c, undefined, false))}
+              </div>
             </div>
           );
         })}

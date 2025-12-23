@@ -29,6 +29,27 @@ export default function Page() {
   // ✅ Debug panel should be hidden by default
   const [debugPanelVisible, setDebugPanelVisible] = useState(false);
 
+  /**
+   * =========================
+   * ✅ Dock Chat UI state (fixed bottom, never covers content)
+   * =========================
+   * Requirements:
+   * - Chat appears only after Parse CV (or Adjust Structure triggers chat)
+   * - Default: collapsed (72–96px)
+   * - Peek animation: 72 -> 160 -> 72
+   * - Expand button: user expands when needed
+   * - Main content padding-bottom always reserves Dock height (never cover sections)
+   */
+  const DOCK_H_COLLAPSED = 88; // 72–96px range
+  const DOCK_H_PEEK = 160;
+  const DOCK_H_EXPANDED = 420; // expanded panel height (tweak as needed)
+  const PEEK_MS = 600;
+
+  const [dockHeight, setDockHeight] = useState<number>(0);
+  const [dockCollapsed, setDockCollapsed] = useState<boolean>(true);
+
+  const peekTimerRef = useRef<number | null>(null);
+
   const DEFAULT_WHOLE_CV_NOTES =
     "Optimize the entire CV against the JD with a professional, factual tone.\n" +
     "- Keep company names, titles, dates, and metrics EXACT.\n" +
@@ -76,6 +97,74 @@ export default function Page() {
 
   /**
    * =========================
+   * ✅ Dock helpers
+   * =========================
+   */
+  const clearPeekTimer = () => {
+    if (peekTimerRef.current) {
+      window.clearTimeout(peekTimerRef.current);
+      peekTimerRef.current = null;
+    }
+  };
+
+  const ensureDockVisibleCollapsed = () => {
+    setDockCollapsed(true);
+    setDockHeight(DOCK_H_COLLAPSED);
+  };
+// ✅ cleanup: avoid dangling peek timer on unmount / HMR
+useEffect(() => {
+  return () => {
+    clearPeekTimer();
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+
+  const runPeek = () => {
+    clearPeekTimer();
+    // expand to peek height, then back to collapsed
+    setDockCollapsed(true);
+    setDockHeight(DOCK_H_PEEK);
+    peekTimerRef.current = window.setTimeout(() => {
+      setDockHeight(DOCK_H_COLLAPSED);
+      peekTimerRef.current = null;
+    }, PEEK_MS);
+  };
+
+  const openDockExpanded = () => {
+    clearPeekTimer();
+    setDockCollapsed(false);
+    setDockHeight(DOCK_H_EXPANDED);
+  };
+
+  const collapseDock = () => {
+    clearPeekTimer();
+    setDockCollapsed(true);
+    setDockHeight(DOCK_H_COLLAPSED);
+  };
+
+  // When ctrl.chatVisible flips true, ensure dock is present & do a peek once.
+  const didFirstChatShowRef = useRef(false);
+  useEffect(() => {
+    if (!ctrl.chatVisible) return;
+
+    // ensure dock exists
+    if (dockHeight === 0) setDockHeight(DOCK_H_COLLAPSED);
+
+    // first time auto-peek (Parse CV or first adjust)
+    if (!didFirstChatShowRef.current) {
+      didFirstChatShowRef.current = true;
+      runPeek();
+    } else {
+      // subsequent shows: keep collapsed (no forced peek)
+      ensureDockVisibleCollapsed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctrl.chatVisible]);
+
+  
+  /**
+   * =========================
    * ✅ FIX: Preview click wrapper
    * =========================
    */
@@ -88,6 +177,25 @@ export default function Page() {
         block: "start",
       });
     }, 0);
+  };
+
+  /**
+   * =========================
+   * ✅ Parse CV wrapper:
+   * - After parse completes, show Dock Chat (collapsed)
+   * - Trigger one-time peek so user sees summary
+   * =========================
+   */
+
+  const handleParseCvWithDock = async () => {
+    await ctrl.parseCv();
+    // ✅ only show dock if parse actually produced sections
+    const hasSections = !!ctrl.sectionsRef.current?.length;
+    if (hasSections) {
+      ctrl.setChatVisible(true);
+      ensureDockVisibleCollapsed();
+      runPeek();
+    }
   };
 
   const inputs = {
@@ -112,7 +220,8 @@ export default function Page() {
     pendingRequirements: ctrl.pendingRequirements,
     setPendingRequirements: ctrl.setPendingRequirements,
 
-    parseCv: ctrl.parseCv,
+    // ✅ override parseCv to inject dock behavior
+    parseCv: handleParseCvWithDock,
     parseBusy: ctrl.parseBusy,
     parseDisabled: ctrl.parseDisabled,
 
@@ -163,6 +272,8 @@ export default function Page() {
     onAdjustStructure: async () => {
       await ctrl.handleChatAdjust();
       ctrl.setChatVisible(true);
+      ensureDockVisibleCollapsed();
+      runPeek();
     },
 
     onReplaceAll: ctrl.replaceAll,
@@ -227,9 +338,11 @@ export default function Page() {
     key: ctrl.jobId || "no-job",
     currentSchema: ctrl.chatSchema,
     visible: ctrl.chatVisible,
+
     cvSectionsConfirmed: ctrl.cvSectionsConfirmed,
     schemaDirty: ctrl.schemaDirty,
     pendingReq: ctrl.pendingRequirements,
+
     onConfirm: () => {
       if (!ctrl.sectionsRef.current.length) {
         ctrl.setNotice("No CV sections yet. Please parse the CV first.");
@@ -243,9 +356,36 @@ export default function Page() {
     onChatUpdate: ctrl.handleChatUpdate,
   };
 
+  /**
+   * =========================
+   * ✅ Agent status label for dock
+   * =========================
+   */
+  const agentStatus =
+    ctrl.parseBusy || ctrl.autoOptimizing || ctrl.previewBusy
+      ? "Parsing"
+      : ctrl.schemaDirty
+      ? "Needs confirmation"
+      : "Ready";
+
+  /**
+   * =========================
+   * ✅ Reserve bottom space so dock never covers content
+   * =========================
+   * - dockHeight is 0 before chat appears
+   * - after Parse CV, dockHeight animates; content padding-bottom follows
+   */
+  const mainPaddingBottom = ctrl.chatVisible ? dockHeight : 0;
+
   return (
     <>
-      <main className="min-h-screen bg-[#eef6f5] px-6 py-10 text-slate-900 overflow-x-hidden">
+      <main
+        className="min-h-screen bg-[#eef6f5] px-6 py-10 text-slate-900 overflow-x-hidden"
+        style={{
+          paddingBottom: mainPaddingBottom,
+          transition: "padding-bottom 180ms ease",
+        }}
+      >
         <div className="mx-auto max-w-6xl rounded-3xl bg-white shadow-xl ring-1 ring-slate-200">
           {/* Header */}
           <div className="px-10 pt-10 space-y-4">
@@ -291,50 +431,173 @@ export default function Page() {
             <InputsPanel {...inputs} />
 
             {/* Right: Main content */}
-            <div className="min-w-0 space-y-6">
-              {!sectionsCtx.sections.length ? (
-                <EmptyState resumeFile={inputs.resumeFile} />
-              ) : (
-                <>
-                  <SectionsPanel {...sectionsCtx} />
-                  <div ref={previewAnchorRef} />
-                  <PreviewPanel {...previewCtx} />
-                </>
-              )}
+            <div className="min-w-0 flex h-[calc(100vh-220px)] flex-col">
 
-              {/* Footer notice + bottom preview button */}
+              <div className="flex-1 overflow-y-auto space-y-6 pr-1">
+                {!sectionsCtx.sections.length ? (
+                  <EmptyState resumeFile={inputs.resumeFile} />
+                ) : (
+                  <>
+                    <SectionsPanel {...sectionsCtx} />
+                    <div ref={previewAnchorRef} />
+                    <PreviewPanel {...previewCtx} />
+                  </>
+                )}
+              </div>
+
+              {/* Footer notice + bottom actions */}
               <div className="border border-slate-200 rounded-2xl px-5 py-5 bg-white shadow-sm">
                 <div className="mb-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
                   {footer.notice}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={footer.onGeneratePreview}
-                  disabled={footer.disabled}
-                  className={footer.className}
-                  title={footer.title}
-                >
-                  {footer.label}
-                </button>
+                <div className="flex flex-col gap-3">
+                  {/* ✅ Always-visible confirm at bottom */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!ctrl.sections.length) {
+                        ctrl.setNotice("No CV sections yet. Please parse the CV first.");
+                        return;
+                      }
+                      ctrl.setCvSectionsConfirmed(true);
+                      ctrl.setNotice(
+                        "CV sections confirmed. You can now Generate Preview / Replace All / Export."
+                      );
+                    }}
+                    disabled={ctrl.autoOptimizing || ctrl.parseBusy || !ctrl.sections.length}
+                    className={`${ctrl.BTN_BASE} h-11 w-full px-4 text-sm ${
+                      ctrl.cvSectionsConfirmed
+                        ? "bg-emerald-700 text-white hover:brightness-105 ring-1 ring-emerald-700/15"
+                        : "bg-emerald-600 text-white hover:brightness-105 ring-1 ring-emerald-600/15"
+                    }`}
+                    title={
+                      !ctrl.sections.length
+                        ? 'Please click "Parse CV" first.'
+                        : undefined
+                    }
+                  >
+                    {ctrl.cvSectionsConfirmed ? "CV Sections Confirmed" : "Confirm Sections"}
+                  </button>
+
+                  {/* existing bottom preview button */}
+                  <button
+                    type="button"
+                    onClick={footer.onGeneratePreview}
+                    disabled={footer.disabled}
+                    className={footer.className}
+                    title={footer.title}
+                  >
+                    {footer.label}
+                  </button>
+                </div>
               </div>
+
             </div>
           </div>
         </div>
       </main>
 
-      {/* Floating ArchitectChat */}
-      <ArchitectChat
-        key={chat.key}
-        currentSchema={chat.currentSchema}
-        visible={chat.visible}
-        cvSectionsConfirmed={chat.cvSectionsConfirmed}
-        schemaDirty={chat.schemaDirty}
-        pendingReq={chat.pendingReq}
-        onConfirm={chat.onConfirm}
-        onAdjust={chat.onAdjust}
-        onChatUpdate={chat.onChatUpdate}
-      />
+      {/* =========================
+          ✅ Dock ArchitectChat (NOT floating)
+          - Only appears after Parse CV / Adjust Structure (ctrl.chatVisible)
+          - Collapsed by default, can Expand
+          - Peek is implemented by temporarily increasing dockHeight
+         ========================= */}
+      {ctrl.chatVisible ? (
+        <div
+          className="fixed bottom-0 left-0 right-0 z-50"
+          style={{
+            height: dockHeight,
+            transition: "height 220ms ease",
+          }}
+        >
+          {/* Align with main container width and page padding */}
+          <div className="mx-auto max-w-6xl px-6 pb-6">
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-100 overflow-hidden">
+              {/* Dock chrome (light teal/blue-green harmony) */}
+              <div
+                className="flex items-center justify-between gap-3 px-4 py-3 bg-[#e8f4f2] cursor-pointer select-none"
+                role="button"
+                tabIndex={0}
+                title={dockCollapsed ? "Click to expand chat" : "Click to minimize chat"}
+                onClick={() => {
+                  if (dockCollapsed) openDockExpanded();
+                  else collapseDock();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    if (dockCollapsed) openDockExpanded();
+                    else collapseDock();
+                  }
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-[#0f766e] text-white text-sm font-semibold">
+                    A
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-800">Architect Chat</div>
+                    <div className="text-xs text-slate-600">
+                      Status: <span className="font-medium">{agentStatus}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {dockCollapsed ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDockExpanded();
+                      }}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      title="Expand chat"
+                    >
+                      Expand <span aria-hidden>↑</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        collapseDock();
+                      }}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      title="Minimize chat"
+                    >
+                      Minimize <span aria-hidden>↓</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+              {/* ArchitectChat body: must support dock presentation */}
+              <ArchitectChat
+                key={chat.key}
+                currentSchema={chat.currentSchema}
+                visible={chat.visible}
+                cvSectionsConfirmed={chat.cvSectionsConfirmed}
+                schemaDirty={chat.schemaDirty}
+                pendingReq={chat.pendingReq}
+                onConfirm={chat.onConfirm}
+                onAdjust={chat.onAdjust}
+                onChatUpdate={chat.onChatUpdate}
+                // ✅ new props (you will add in ArchitectChat.tsx)
+                presentation="dock"
+                dockHeight={dockHeight}
+                collapsed={dockCollapsed}
+                onToggleCollapse={() => {
+                  if (dockCollapsed) openDockExpanded();
+                  else collapseDock();
+                }}
+                onRequestExpand={openDockExpanded}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

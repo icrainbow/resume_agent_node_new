@@ -1,0 +1,43 @@
+# Node
+node_modules
+.next
+out
+
+# Python
+worker-py/.venv
+__pycache__
+
+#runtime / local logs
+.pids/
+*.log
+
+#local backups & scratch
+*.bak
+*.broken.*
+*.disabled
+
+# ===== Architect local debug / runtime artifacts =====
+web/.architect_store*/
+web/_architect_store__disabled/
+
+#accidental package arficats
+web@0.1.0/
+
+# Python virtual environment
+.venv/
+
+# Node
+node_modules/
+*.pyc
+# env / secrets
+.env
+.env.local
+.env.*.local
+
+# temp / outputs
+.tmp
+outputs
+worker-py/outputs
+
+# OS
+.DS_Store

@@ -1,0 +1,21 @@
+/* ===== Resume section scroll container ===== */
+.section-15-lines {
+    line-height: 1.5rem;          /* 24px，和正文一致 */
+    max-height: calc(1.5rem * 15);
+    overflow-y: auto;
+    padding-right: 6px;           /* 给滚动条留空间 */
+  }
+  
+  /* 滚动条样式（轻量、现代、克制） */
+  .section-15-lines::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .section-15-lines::-webkit-scrollbar-thumb {
+    background-color: rgba(15, 23, 42, 0.15); /* slate-900/15 */
+    border-radius: 4px;
+  }
+  
+  .section-15-lines::-webkit-scrollbar-track {
+    background
+  

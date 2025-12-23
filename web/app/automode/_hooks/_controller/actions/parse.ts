@@ -72,7 +72,6 @@ export async function parseCvAction(args: {
         type: "SET",
         patch: {
           notice: `${err}. raw_text_len=${rawLen}`,
-          sections: [],
           jobId: "",
           cvSectionsConfirmed: false,
         },
@@ -80,18 +79,33 @@ export async function parseCvAction(args: {
       return;
     }
 
+    // -------- 核心解析结果 --------
     const parsed = mapParseRespToSections(data);
+
+    // 🔴 关键 DEBUG：直接把 parsed 打出来
+    console.log(
+      "[DEBUG][parseCvAction] parsed sections =",
+      parsed.map((s) => ({
+        id: s.id,
+        title: s.title,
+        isGroup: s.isGroup,
+        parentId: s.parentId,
+        textLen: s.text?.length,
+        constraints: s.constraints,
+        optimizedText: s.optimizedText,
+      }))
+    );
+
     constraintsBaselineRef.current = buildConstraintsBaseline(parsed, "empty");
     const { openById, openGroups } = buildOpenMaps(parsed);
 
-    // create job_id once
     const jid = newJobId();
     jobIdRef.current = jid;
 
-    // schema baseline for debug
     let baseSchema = st.currentSchema;
-    if (!st.schemaProvidedByUser || !baseSchema)
+    if (!st.schemaProvidedByUser || !baseSchema) {
       baseSchema = buildBaselineSchemaFromSections(parsed);
+    }
 
     const ok = commitSchemaCandidateOrBlock({
       st,
@@ -99,17 +113,22 @@ export async function parseCvAction(args: {
       candidate: baseSchema,
       source: "parse_baseline",
       onAccepted: (validated) => {
+        // ✅ 用 SET_SECTIONS 写入 sections
+        dispatch({
+          type: "SET_SECTIONS",
+          sections: parsed,
+          openById,
+          openGroups,
+          confirmed: false,
+        });
+
         dispatch({
           type: "SET",
           patch: {
-            sections: parsed,
-            openById,
-            openGroups,
             previewUrl: "",
             previewDirty: true,
             exportLinks: null,
             jobId: jid,
-            cvSectionsConfirmed: false,
             currentSchema: validated,
             currentSchemaDebug: validated,
             debugSchemaOld: validated,
@@ -123,16 +142,20 @@ export async function parseCvAction(args: {
       },
       onBlocked: () => {
         dispatch({
+          type: "SET_SECTIONS",
+          sections: parsed,
+          openById,
+          openGroups,
+          confirmed: false,
+        });
+
+        dispatch({
           type: "SET",
           patch: {
-            sections: parsed,
-            openById,
-            openGroups,
             previewUrl: "",
             previewDirty: true,
             exportLinks: null,
             jobId: jid,
-            cvSectionsConfirmed: false,
             currentSchema: null,
             currentSchemaDebug: null,
             debugSchemaOld: baseSchema,
@@ -153,7 +176,6 @@ export async function parseCvAction(args: {
       type: "SET",
       patch: {
         notice: e?.message || "Failed to parse CV.",
-        sections: [],
         jobId: "",
         cvSectionsConfirmed: false,
       },
@@ -163,3 +185,4 @@ export async function parseCvAction(args: {
     dispatch({ type: "SET", patch: { parseBusy: false } });
   }
 }
+

@@ -24,17 +24,115 @@ export function normalizePendingReq(v: any): string {
 /** --------- parse/apply ---------- */
 
 export function mapParseRespToSections(data: ParseResp): Section[] {
-  return (data.sections || []).map((s: any) => ({
-    id: String(s.id ?? ""),
-    title: String(s.title ?? ""),
-    text: String(s.text ?? ""),
-    parentId: s.parentId ?? null,
-    isGroup: !!s.isGroup,
-    constraints: "",
-    optimizedText: "",
-    error: undefined,
-  }));
+  const raw = Array.isArray((data as any)?.sections) ? (data as any).sections : [];
+  const out: Section[] = [];
+  console.table(data.sections?.map((s:any)=>({
+    id: s.id, title: s.title, isGroup: s.isGroup, parentId: s.parentId, textLen: (s.text||"").length
+  })));
+
+  if (process.env.NODE_ENV !== "production") {
+    console.groupCollapsed("[DEBUG][mapParseRespToSections]");
+    console.log("raw sections length =", raw.length);
+    try {
+      console.table(
+        raw.map((s: any, idx: number) => ({
+          idx,
+          id: s?.id,
+          title: s?.title,
+          parentId: s?.parentId ?? null,
+          isGroup: s?.isGroup,
+          textLen: typeof s?.text === "string" ? s.text.length : 0,
+        }))
+      );
+    } catch {
+      // ignore console.table issues in some environments
+    }
+    console.groupEnd();
+  }
+
+  for (const s of raw) {
+    const id = String(s?.id ?? "");
+    const title = String(s?.title ?? "");
+    const text = typeof s?.text === "string" ? s.text : String(s?.text ?? "");
+    const parentId = s?.parentId ?? null;
+    const isGroup = !!s?.isGroup;
+
+    // Skip totally invalid rows
+    if (!id && !title && !text) continue;
+
+    if (isGroup) {
+      // 1) Group node (always text=""; group is just a container)
+      const group: Section = {
+        id,
+        title,
+        text: "",
+        parentId: null,
+        isGroup: true,
+        constraints: "",
+        optimizedText: "",
+        optimizing: false,
+        error: undefined,
+      };
+      out.push(group);
+
+      // 2) If backend did not provide child sections, create one leaf under the group
+      //    IMPORTANT: Do NOT duplicate title in text. If text equals title, treat as empty.
+      const cleaned =
+        text.trim() && text.trim() !== title.trim() ? text : "";
+
+      if (cleaned) {
+        out.push({
+          id: `${id}__leaf`,
+          title, // leaf keeps same title (UI will show only one title at render-time)
+          text: cleaned,
+          parentId: id,
+          isGroup: false,
+          constraints: "",
+          optimizedText: "",
+          optimizing: false,
+          error: undefined,
+        });
+      }
+    } else {
+      // Normal leaf node from backend
+      out.push({
+        id,
+        title,
+        text,
+        parentId,
+        isGroup: false,
+        constraints: "",
+        optimizedText: "",
+        optimizing: false,
+        error: undefined,
+      });
+    }
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.groupCollapsed("[DEBUG][mapParseRespToSections] final");
+    console.log("out length =", out.length);
+    try {
+      console.table(
+        out.map((s, idx) => ({
+          idx,
+          id: s.id,
+          title: s.title,
+          parentId: s.parentId ?? null,
+          isGroup: s.isGroup,
+          textLen: typeof s.text === "string" ? s.text.length : 0,
+        }))
+      );
+    } catch {
+      // ignore
+    }
+    console.groupEnd();
+  }
+
+  return out;
 }
+
+
 
 export function buildOpenMaps(sections: Section[]) {
   const openGroups: Record<string, boolean> = {};

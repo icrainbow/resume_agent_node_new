@@ -39,10 +39,15 @@ type DebugPanelUI = {
 type Props = {
   model: DebugPanelModel;
   ui: DebugPanelUI;
+
+  onLoadDevBootstrap?: () => void;
+  devBootstrapDisabled?: boolean;
+  devBootstrapLabel?: string;
 };
 
 export default function DebugPanel(props: Props) {
-  const { model, ui } = props;
+  const { model, ui, onLoadDevBootstrap, devBootstrapDisabled, devBootstrapLabel } =
+    props;
 
   const {
     debugOn,
@@ -63,10 +68,27 @@ export default function DebugPanel(props: Props) {
 
   const { BTN_BASE, BTN_SM, BTN_XS, BTN_SECONDARY, BTN_OUTLINE } = ui;
 
+  const showDevBootstrap =
+    process.env.NODE_ENV !== "production" && typeof onLoadDevBootstrap === "function";
+
+  const label = devBootstrapLabel || "Load Dev Bootstrap";
+
   return (
     <div className="w-full">
       {/* Right-side actions only */}
       <div className="flex items-center justify-end gap-2">
+        {showDevBootstrap && (
+          <button
+            type="button"
+            onClick={onLoadDevBootstrap}
+            disabled={!!devBootstrapDisabled}
+            className={`${BTN_BASE} ${BTN_SM} ${BTN_OUTLINE}`}
+            title="Load sample resume + JD + schema from /public/dev/*"
+          >
+            {label}
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => setDebugOn((v) => !v)}

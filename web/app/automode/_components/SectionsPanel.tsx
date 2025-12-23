@@ -1,14 +1,15 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import type { Section } from "../_types/types";
 
+console.error("🔥🔥🔥 THIS IS THE SECTIONS PANEL I AM EDITING 🔥🔥🔥");
+
 type Props = {
-  // data
   sections: Section[];
   roots: Section[];
   childrenByParent: Map<string, Section[]>;
 
-  // UI state
   openById: Record<string, boolean>;
   setOpenById: (
     updater:
@@ -23,23 +24,19 @@ type Props = {
       | ((prev: Record<string, boolean>) => Record<string, boolean>)
   ) => void;
 
-  // confirmation gate
   cvSectionsConfirmed: boolean;
   setCvSectionsConfirmed: (v: boolean) => void;
 
-  // flags
   autoOptimizing: boolean;
   parseBusy: boolean;
   previewBusy: boolean;
   replaceAllDisabled: boolean;
 
-  // misc derived
   gateDeemphasis: string;
   TEXT_BOX_H: string;
   jdText: string;
   constraintsDirtyById: Record<string, boolean>;
 
-  // progress badge
   progress: {
     running: boolean;
     current: number;
@@ -47,7 +44,6 @@ type Props = {
     currentTitle?: string;
   };
 
-  // callbacks (page owns business logic)
   setNotice: (v: string) => void;
 
   onAdjustStructure: () => Promise<void> | void;
@@ -61,7 +57,6 @@ type Props = {
   onConstraintChange: (id: string, v: string) => void;
   onMergeReplaceOne: (id: string) => void;
 
-  // style tokens from page
   ui: {
     BTN_BASE: string;
     BTN_SM: string;
@@ -72,6 +67,13 @@ type Props = {
   };
 };
 
+function normalizeTitle(s: string | undefined | null) {
+  return (s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 export default function SectionsPanel(props: Props) {
   const {
     sections,
@@ -80,6 +82,7 @@ export default function SectionsPanel(props: Props) {
 
     openById,
     setOpenById,
+
     openGroups,
     setOpenGroups,
 
@@ -93,170 +96,87 @@ export default function SectionsPanel(props: Props) {
 
     gateDeemphasis,
     TEXT_BOX_H,
-    jdText,
-    constraintsDirtyById,
-
-    progress,
 
     setNotice,
-
     onAdjustStructure,
     onReplaceAll,
     onGeneratePreview,
-
-    onOptimizeOne,
-    onCloseSection,
-
     onSectionTextChange,
-    onConstraintChange,
-    onMergeReplaceOne,
 
     ui,
   } = props;
 
+  const effectiveRoots =
+    roots.length === 0 && sections.length > 0 ? sections : roots;
+
+  // ---- Build ids for init/reset (group + all sections we actually render) ----
+  const groupIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const r of effectiveRoots) if (r.isGroup) ids.push(r.id);
+    return ids;
+  }, [effectiveRoots]);
+
+  const allSectionIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const r of effectiveRoots) {
+      // roots are also collapsible
+      ids.push(r.id);
+
+      if (r.isGroup) {
+        const children = childrenByParent.get(r.id) ?? [];
+        for (const c of children) ids.push(c.id);
+      }
+    }
+    return Array.from(new Set(ids));
+  }, [effectiveRoots, childrenByParent]);
+
+  // ---- Reset open states on parse/adjust (sections change) ----
+  useEffect(() => {
+    setOpenGroups((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const gid of groupIds) next[gid] = prev[gid] ?? false; // default collapsed
+      return next;
+    });
+
+    setOpenById((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const id of allSectionIds) next[id] = prev[id] ?? false; // default collapsed
+      return next;
+    });
+  }, [groupIds, allSectionIds, setOpenGroups, setOpenById]);
+
+  const toggleGroup = (groupId: string) =>
+    setOpenGroups((prev) => ({ ...prev, [groupId]: !(prev[groupId] ?? false) }));
+
   const toggleSection = (id: string) =>
     setOpenById((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
 
-  const closeSection = (id: string) =>
-    setOpenById((prev) => ({ ...prev, [id]: false }));
-
-  const toggleGroup = (groupId: string) =>
-    setOpenGroups((prev) => ({ ...prev, [groupId]: !(prev[groupId] ?? true) }));
-
-  const renderSectionRow = (s: Section) => {
+  const renderSectionBody = (s: Section, showTitle: boolean) => {
     const isActionable = !s.isGroup;
 
     return (
-      <div key={s.id} className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Left cell: Original */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="rounded-xl border border-slate-200 p-4">
-          <div className="flex min-w-0 items-start justify-between gap-3">
-            <h4 className="min-w-0 flex-1 truncate font-semibold" title={s.title}>
-              {s.title}
-            </h4>
-
-            {autoOptimizing && progress.running && (
-              <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 ring-1 ring-slate-200">
-                Whole CV {progress.current}/{progress.total}
-              </span>
-            )}
-          </div>
+          {showTitle && <h4 className="font-semibold">{s.title}</h4>}
 
           <textarea
             className={[
-              "mt-2",
+              showTitle ? "mt-2" : "",
               TEXT_BOX_H,
-              "min-w-0 w-full resize-none overflow-y-auto overflow-x-hidden",
-              "whitespace-pre-wrap break-words",
-              "rounded-lg bg-slate-50/60 p-3 text-sm text-slate-700",
+              "w-full resize-none rounded-lg bg-slate-50/60 p-3 text-sm",
               "ring-1 ring-slate-200",
-              "outline-none focus:ring-4 focus:ring-[#bfe7e3]/40",
-            ].join(" ")}
+            ]
+              .filter(Boolean)
+              .join(" ")}
             value={s.text}
-            placeholder="—"
+            placeholder="(empty section – please edit)"
             onChange={(e) => onSectionTextChange(s.id, e.target.value)}
             disabled={!isActionable}
           />
-
-          <div className="mt-3 flex items-stretch gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-600">
-                  Constraints (optional)
-                </span>
-                {constraintsDirtyById[s.id] && (
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
-                    Edited
-                  </span>
-                )}
-              </div>
-
-              <textarea
-                className={[
-                  "min-w-0 w-full resize-none rounded-lg border p-2 text-sm outline-none",
-                  "focus:ring-4 focus:ring-[#bfe7e3]/40",
-                  constraintsDirtyById[s.id]
-                    ? "border-amber-300 bg-amber-50/50 ring-1 ring-amber-200 focus:border-amber-400"
-                    : "border-slate-200 focus:border-slate-300",
-                ].join(" ")}
-                placeholder={
-                  isActionable
-                    ? "E.g. keep numbers exact; avoid exaggeration; keep it concise…"
-                    : "Group section (no constraints)."
-                }
-                value={s.constraints}
-                onChange={(e) => onConstraintChange(s.id, e.target.value)}
-                rows={2}
-                disabled={!isActionable}
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => onOptimizeOne(s)}
-              disabled={!!s.optimizing || autoOptimizing || !isActionable}
-              className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_PRIMARY}`}
-              title={
-                !isActionable
-                  ? "Group section has no text. Optimize child sections."
-                  : !jdText.trim()
-                  ? "Provide JD text first."
-                  : undefined
-              }
-            >
-              {s.optimizing ? "Optimizing…" : "Optimize"}
-            </button>
-          </div>
-
-          {s.error && (
-            <div className="mt-2 rounded-lg bg-red-50 p-2 text-sm text-red-700 ring-1 ring-red-100">
-              {s.error}
-            </div>
-          )}
         </div>
 
-        {/* Right cell: Optimized */}
         <div className="rounded-xl border border-slate-200 p-4">
-          <div className="flex min-w-0 items-start justify-between gap-3">
-            <h4 className="min-w-0 flex-1 truncate font-semibold" title={s.title}>
-              {s.title}
-            </h4>
-
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  onCloseSection(s.id);
-                  closeSection(s.id);
-                }}
-                className={`${ui.BTN_BASE} ${ui.BTN_XS} ${ui.BTN_SECONDARY}`}
-                title="Collapse this section"
-              >
-                Collapse
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onMergeReplaceOne(s.id)}
-                disabled={!s.optimizedText || autoOptimizing || !isActionable}
-                className={`${ui.BTN_BASE} ${ui.BTN_XS} ${ui.BTN_PRIMARY}`}
-                title={!isActionable ? "Group section has no merge action." : undefined}
-              >
-                Merge & Replace
-              </button>
-            </div>
-          </div>
-
-          <pre
-            className={[
-              "mt-2",
-              TEXT_BOX_H,
-              "min-w-0 overflow-y-auto overflow-x-hidden",
-              "whitespace-pre-wrap break-words",
-              "rounded-lg bg-slate-50/60 p-3 text-sm text-slate-700",
-              "ring-1 ring-slate-200",
-            ].join(" ")}
-          >
+          <pre className="whitespace-pre-wrap text-sm">
             {s.optimizedText || "—"}
           </pre>
         </div>
@@ -264,65 +184,40 @@ export default function SectionsPanel(props: Props) {
     );
   };
 
-  const renderOutlineRow = (s: Section) => {
-    const isOpen = !!openById[s.id];
-    const hasOptimized = !!(s.optimizedText || "").trim();
-    const hasConstraintsEdited = !!constraintsDirtyById[s.id];
-    const hasError = !!s.error;
-
-    if (isOpen) return renderSectionRow(s);
+  // Collapsible row, but label can be overridden (for flattened group case)
+  const renderCollapsibleSection = (
+    s: Section,
+    labelOverride?: string,
+    forceShowTitleInBody?: boolean
+  ) => {
+    const isOpen = openById[s.id] ?? false;
 
     return (
-      <div
-        key={s.id}
-        className="rounded-xl border border-slate-200 bg-white p-4 hover:brightness-[0.99]"
-      >
+      <div key={s.id} className="space-y-3">
         <button
           type="button"
           onClick={() => toggleSection(s.id)}
-          className="w-full text-left"
-          title="Click to expand"
+          className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-semibold hover:bg-slate-50"
+          title={isOpen ? "Collapse" : "Expand"}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-slate-800">{s.title}</div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {s.optimizing && (
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 ring-1 ring-slate-200">
-                  Optimizing…
-                </span>
-              )}
-              {hasOptimized && (
-                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-100">
-                  Optimized
-                </span>
-              )}
-              {hasConstraintsEdited && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
-                  Constraints Edited
-                </span>
-              )}
-              {hasError && (
-                <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-red-100">
-                  Error
-                </span>
-              )}
-              <span className="text-[11px] font-semibold text-slate-500">Expand</span>
-            </div>
-          </div>
+          <span className="truncate">{labelOverride ?? s.title}</span>
+          <span className="ml-3 shrink-0 text-xs font-semibold text-slate-500">
+            {isOpen ? "Hide" : "Show"}
+          </span>
         </button>
+
+        {isOpen ? (
+          <div>{renderSectionBody(s, !!forceShowTitleInBody)}</div>
+        ) : null}
       </div>
     );
   };
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-6">
-        <h3 className="text-lg font-semibold">Original</h3>
-
-        <div className="flex items-center gap-2">
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-6">
+      {/* ===== Action Bar ===== */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => {
@@ -341,19 +236,15 @@ export default function SectionsPanel(props: Props) {
                 ? "bg-emerald-600 text-white hover:brightness-105 ring-1 ring-emerald-600/10"
                 : "bg-amber-500 text-amber-950 hover:brightness-105 ring-1 ring-amber-500/20"
             }`}
-            title="Confirm CV parsing result"
           >
             {cvSectionsConfirmed ? "CV Sections Confirmed" : "Please Confirm Sections"}
           </button>
 
           <button
             type="button"
-            onClick={async () => {
-              await onAdjustStructure();
-            }}
+            onClick={onAdjustStructure}
             disabled={autoOptimizing || parseBusy || !sections.length}
             className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_OUTLINE}`}
-            title="Adjust section structure (resets confirmation and calls backend)"
           >
             Adjust structure
           </button>
@@ -363,13 +254,6 @@ export default function SectionsPanel(props: Props) {
             onClick={onReplaceAll}
             disabled={replaceAllDisabled || !cvSectionsConfirmed}
             className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_PRIMARY} ${gateDeemphasis}`}
-            title={
-              !cvSectionsConfirmed
-                ? 'Please press "Confirm CV Sections" to confirm CV parsing result first.'
-                : replaceAllDisabled
-                ? "No optimized content to replace (or busy)."
-                : "Replace original text with optimized text for all sections that have results."
-            }
           >
             Replace All
           </button>
@@ -379,56 +263,61 @@ export default function SectionsPanel(props: Props) {
             onClick={onGeneratePreview}
             disabled={previewBusy || autoOptimizing || parseBusy || !cvSectionsConfirmed}
             className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_SECONDARY} ${gateDeemphasis}`}
-            title={!cvSectionsConfirmed ? 'Please press "Confirm CV Sections" first.' : "Generate preview"}
           >
             {previewBusy ? "Generating…" : "Generate Preview"}
           </button>
         </div>
-
-        <h3 className="text-lg font-semibold text-right">Optimized</h3>
       </div>
 
-      <div className="mt-4 max-h-[70vh] overflow-y-auto pr-2">
-        <div className="space-y-6">
-          {roots.map((root) => {
-            if (root.isGroup) {
-              const children = childrenByParent.get(root.id) ?? [];
-              const isOpen = openGroups[root.id] ?? true;
+      {/* ===== Sections ===== */}
+      <div className="space-y-6">
+        {effectiveRoots.map((root) => {
+          // Non-group roots: collapsible normally
+          if (!root.isGroup) {
+            return renderCollapsibleSection(root, undefined, true);
+          }
 
-              return (
-                <div key={root.id} className="space-y-4">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <button
-                        type="button"
-                        onClick={() => toggleGroup(root.id)}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                        title="Toggle group"
-                      >
-                        <span className="text-xs font-semibold text-slate-500">
-                          {isOpen ? "▾" : "▸"}
-                        </span>
-                        <h4 className="min-w-0 truncate font-semibold text-slate-800">
-                          {root.title}
-                        </h4>
-                      </button>
+          // Group roots:
+          const children = childrenByParent.get(root.id) ?? [];
 
-                      <span className="shrink-0 text-xs text-slate-500">
-                        {children.length} items
-                      </span>
-                    </div>
-                  </div>
+          // ✅ Flatten case: single child and (almost) same title
+          if (
+            children.length === 1 &&
+            normalizeTitle(children[0].title) === normalizeTitle(root.title)
+          ) {
+            // show ONLY ONE row, label is the group title, body is the child's content
+            return (
+              <div key={root.id} className="space-y-4">
+                {renderCollapsibleSection(children[0], root.title, false)}
+              </div>
+            );
+          }
 
-                  {isOpen && (
-                    <div className="space-y-3">{children.map((c) => renderOutlineRow(c))}</div>
-                  )}
+          // Normal case: show group header + children list
+          const isGroupOpen = openGroups[root.id] ?? false;
+
+          return (
+            <div key={root.id} className="space-y-4">
+              <button
+                type="button"
+                onClick={() => toggleGroup(root.id)}
+                className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-semibold hover:bg-slate-50"
+                title={isGroupOpen ? "Collapse group" : "Expand group"}
+              >
+                <span className="truncate">{root.title}</span>
+                <span className="ml-3 shrink-0 text-xs font-semibold text-slate-500">
+                  {isGroupOpen ? "Hide" : "Show"}
+                </span>
+              </button>
+
+              {isGroupOpen ? (
+                <div className="space-y-4">
+                  {children.map((c) => renderCollapsibleSection(c, undefined, false))}
                 </div>
-              );
-            }
-
-            return renderOutlineRow(root);
-          })}
-        </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </section>
   );

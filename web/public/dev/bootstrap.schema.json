@@ -1,0 +1,219 @@
+{
+  "version": "bootstrap_docx_strict_v1",
+
+  "groups": [
+    { "id": "1", "title": "PROFESSIONAL SUMMARY" },
+    { "id": "2", "title": "CORE SKILLS" },
+    { "id": "3", "title": "PROFESSIONAL EXPERIENCE" },
+    { "id": "4", "title": "EDUCATION" },
+    { "id": "5", "title": "CERTIFICATIONS" },
+    { "id": "6", "title": "PUBLICATIONS & PATENTS" }
+  ],
+
+  "sections": [
+    {
+      "id": "1",
+      "title": "PROFESSIONAL SUMMARY",
+      "type": "group",
+      "isGroup": true
+    },
+    {
+      "id": "1.1",
+      "title": "Professional Summary",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "1",
+      "anchors": {
+        "start": [
+          "AI Product Owner / Program Leader with 15+ years of exper..., regulated digital platforms in global financial institutions."
+        ],
+        "end": [
+          "Proven track record working across Product, Engineering, Com...gal, Risk, and Operations in bank-grade governance environments."
+        ]
+      }
+    },
+
+    {
+      "id": "2",
+      "title": "CORE SKILLS",
+      "type": "group",
+      "isGroup": true
+    },
+    {
+      "id": "2.1",
+      "title": "Core Skills",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "2",
+      "anchors": {
+        "start": [
+          "AI & Machine Learning:"
+        ],
+        "end": [
+          "BPMN, Regulatory Compliance, Risk Management, Records Management, Data Privacy"
+        ]
+      }
+    },
+
+    {
+      "id": "3",
+      "title": "PROFESSIONAL EXPERIENCE",
+      "type": "group",
+      "isGroup": true
+    },
+
+    {
+      "id": "3.1",
+      "title": "Product Owner",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "3",
+      "anchors": {
+        "start": [
+          "Product Owner",
+          "UBS | Singapore\n2022 – Present",
+          "Product Owner for the UBS Collaboration Platform, owning Ch"
+        ],
+        "end": [
+          "Built AI-enabled conversational banking capabilities throug"
+        ]
+      }
+    },
+
+    {
+      "id": "3.2",
+      "title": "IT Product and Service Manager",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "3",
+      "anchors": {
+        "start": [
+          "IT Product and Service Manager",
+          "UBS | Singapore\n2019 – 2021",
+          "Led a globally distributed delivery team of 15+ engineers across Singapore, Hong Kong, Qatar, India, and Switzerland."
+        ],
+        "end": [
+          "Translated business requirements into executable IT delivery plans aligned with operational and regulatory requirements."
+        ]
+      }
+    },
+
+    {
+      "id": "3.3",
+      "title": "Business Analyst",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "3",
+      "anchors": {
+        "start": [
+          "Business Analyst",
+          "UBS | Singapore\n2019 – 2020",
+          "UBS | Singapore\n2019 – 2020"
+        ],
+        "end": [
+          "Collaborated with business, engineering, compliance, cybersecurity, UX, and vendors to deliver compliant IT solutions."
+        ]
+      }
+    },
+
+    {
+      "id": "3.4",
+      "title": "Senior Management Consultant, Financial Services",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "3",
+      "anchors": {
+        "start": [
+          "Senior Management Consultant, Financial Services ",
+          "Infosys Consulting | Singapore\n2014 – 2018"
+        ],
+        "end": [
+          "Client: Hong Kong Jockey Club – Designed and implemented an... improve portfolio visibility, governance, and decision-making."
+        ]
+      }
+    },
+
+    {
+      "id": "3.5",
+      "title": "Software Engineer",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "3",
+      "anchors": {
+        "start": [
+          "Software Engineer",
+          "IBM Shanghai R&D & Goldman Sachs Hong Kong| Shanghai & Hong Kong\n2009 – 2012"
+        ],
+        "end": [
+          "Deployed systems across Windows, Linux, and Unix platforms,... supporting high-reliability, data-intensive financial systems."
+        ]
+      }
+    },
+
+    {
+      "id": "4",
+      "title": "EDUCATION",
+      "type": "group",
+      "isGroup": true
+    },
+    {
+      "id": "4.1",
+      "title": "Education",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "4",
+      "anchors": {
+        "start": [
+          "MBA, INSEAD | France / Singapore | 2013"
+        ],
+        "end": [
+          "Bachelor of Science in Computer Science, Fudan University | China | 2001 – 2005"
+        ]
+      }
+    },
+
+    {
+      "id": "5",
+      "title": "CERTIFICATIONS",
+      "type": "group",
+      "isGroup": true
+    },
+    {
+      "id": "5.1",
+      "title": "Certifications",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "5",
+      "anchors": {
+        "start": [
+          "IBM Generative AI Engineering Specialization"
+        ],
+        "end": [
+          "CFA Level I"
+        ]
+      }
+    },
+
+    {
+      "id": "6",
+      "title": "PUBLICATIONS & PATENTS",
+      "type": "group",
+      "isGroup": true
+    },
+    {
+      "id": "6.1",
+      "title": "Publications & Patents",
+      "type": "leaf",
+      "isGroup": false,
+      "parentId": "6",
+      "anchors": {
+        "start": [
+          "Level Influence of Spatial Pyramid Matching in Object Classification, ACM Multimedia (ACMMM), 2011."
+        ],
+        "end": [
+          "Image Retrieval Algorithm, Patent Ref No. 07903807, Japan Application No. 2007-255209."
+        ]
+      }
+    }
+  ]
+}

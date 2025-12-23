@@ -1,9 +1,10 @@
 // web/app/automode/page.tsx
 "use client";
 
-import { useRef } from "react";
+console.log("🔥 PAGE MARKER: automode page.tsx loaded");
 
-import DebugPanel from "./_components/DebugPanel";
+import { useEffect, useRef, useState } from "react";
+
 import InputsPanel from "./_components/InputsPanel";
 import SectionsPanel from "./_components/SectionsPanel";
 import EmptyState from "./_components/EmptyState";
@@ -25,6 +26,9 @@ export default function Page() {
   const jdInputRef = useRef<HTMLInputElement | null>(null);
   const previewAnchorRef = useRef<HTMLDivElement | null>(null);
 
+  // ✅ Debug panel should be hidden by default
+  const [debugPanelVisible, setDebugPanelVisible] = useState(false);
+
   const DEFAULT_WHOLE_CV_NOTES =
     "Optimize the entire CV against the JD with a professional, factual tone.\n" +
     "- Keep company names, titles, dates, and metrics EXACT.\n" +
@@ -40,19 +44,44 @@ export default function Page() {
     jdInputRef,
   });
 
+  // ✅ DEV diagnostics (truth source): log when state ACTUALLY changes (not same-tick reads)
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    console.log(
+      "[DEV][STATE] resumeFile:",
+      ctrl.resumeFile?.name,
+      ctrl.resumeFile?.size
+    );
+  }, [ctrl.resumeFile]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    console.log(
+      "[DEV][STATE] schemaFile/provided:",
+      ctrl.schemaFile?.name,
+      ctrl.schemaFile?.size,
+      "schemaProvidedByUser:",
+      (ctrl as any).schemaProvidedByUser
+    );
+  }, [ctrl.schemaFile]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    console.log(
+      "[DEV][STATE] jdTextLen/jdFile:",
+      (ctrl.jdText || "").length,
+      ctrl.jdFile?.name
+    );
+  }, [ctrl.jdText, ctrl.jdFile]);
+
   /**
    * =========================
    * ✅ FIX: Preview click wrapper
-   * - In refactor version, footer button may be disabled when not confirmed,
-   *   leading to "no reaction" UX.
-   * - We keep gating, but ensure click ALWAYS produces a notice if blocked.
    * =========================
    */
   const handleGeneratePreview = async () => {
     await ctrl.generatePdf();
-  
-    // 如果 previewUrl 生成成功，PreviewPanel 会渲染出来；我们滚到它上方的 anchor
-    // 用 setTimeout(0) 确保 React 已完成本轮渲染再滚动
+
     setTimeout(() => {
       previewAnchorRef.current?.scrollIntoView({
         behavior: "smooth",
@@ -60,8 +89,6 @@ export default function Page() {
       });
     }, 0);
   };
-    
-  
 
   const inputs = {
     resumeInputRef: ctrl.resumeInputRef,
@@ -107,11 +134,6 @@ export default function Page() {
     ui: ctrl.inputsPanelUI,
   };
 
-  const debug = {
-    model: ctrl.debugPanelModel,
-    ui: ctrl.debugPanelUI,
-  };
-
   const sectionsCtx = {
     sections: ctrl.sections,
     roots: ctrl.roots,
@@ -144,8 +166,6 @@ export default function Page() {
     },
 
     onReplaceAll: ctrl.replaceAll,
-
-    // ✅ unify entry: always goes through wrapper (consistent behavior)
     onGeneratePreview: handleGeneratePreview,
 
     onOptimizeOne: (s: any) => ctrl.optimizeOne(s.id),
@@ -179,11 +199,8 @@ export default function Page() {
 
     onGenerateCv: ctrl.generateCvDownloads,
 
-    // ✅ unify: refresh can stay as-is
     onRefreshPreview: ctrl.refreshPreview,
     onClosePreview: () => ctrl.setPreviewUrl(""),
-
-    // ✅ unify: PreviewPanel's generate preview uses same wrapper
     onGeneratePreview: handleGeneratePreview,
 
     ui: {
@@ -195,15 +212,10 @@ export default function Page() {
     },
   };
 
-  /**
-   * Footer:
-   * ✅ Change: do NOT disable purely due to !cvSectionsConfirmed.
-   * We keep the visual deemphasis, but allow click so user gets a notice.
-   */
   const footer = {
     notice: ctrl.notice,
     onGeneratePreview: handleGeneratePreview,
-    disabled: ctrl.previewBusy || ctrl.autoOptimizing || ctrl.parseBusy, // ✅ removed !cvSectionsConfirmed
+    disabled: ctrl.previewBusy || ctrl.autoOptimizing || ctrl.parseBusy,
     className: `${ctrl.BTN_BASE} h-11 w-full px-4 text-sm ${ctrl.BTN_PRIMARY} ${ctrl.gateDeemphasis}`,
     title: !ctrl.cvSectionsConfirmed
       ? 'Please press "Confirm CV Sections" to confirm CV parsing result first.'
@@ -236,8 +248,40 @@ export default function Page() {
       <main className="min-h-screen bg-[#eef6f5] px-6 py-10 text-slate-900 overflow-x-hidden">
         <div className="mx-auto max-w-6xl rounded-3xl bg-white shadow-xl ring-1 ring-slate-200">
           {/* Header */}
-          <div className="px-10 pt-10">
-            <DebugPanel model={debug.model} ui={debug.ui} />
+          <div className="px-10 pt-10 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-lg font-semibold">Auto Mode</div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* ✅ Load Testing Parameters stays OUTSIDE (always visible) */}
+                <button
+                  type="button"
+                  onClick={ctrl.devBootstrap}
+                  disabled={ctrl.parseBusy || ctrl.autoOptimizing || ctrl.previewBusy}
+                  className={`${ctrl.BTN_BASE} ${ctrl.BTN_SM} ${ctrl.BTN_OUTLINE}`}
+                  title="Load testing parameters (dev helper)"
+                >
+                  Load Testing Parameters
+                </button>
+
+                {/* ✅ Debug panel toggle (default hidden) */}
+                <button
+                  type="button"
+                  onClick={() => setDebugPanelVisible((v) => !v)}
+                  className={`${ctrl.BTN_BASE} ${ctrl.BTN_SM} ${ctrl.BTN_OUTLINE}`}
+                  title={debugPanelVisible ? "Hide Debug Panel" : "Show Debug Panel"}
+                >
+                  {debugPanelVisible ? "Hide Debug Panel" : "Show Debug Panel"}
+                </button>
+              </div>
+            </div>
+
+            {/* ✅ Debug panel content (only visible when toggled) */}
+            {debugPanelVisible ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-sm font-semibold text-slate-700">Debug Panel</div>
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-8 border-t border-slate-200" />

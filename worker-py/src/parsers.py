@@ -205,11 +205,15 @@ def _extract_headers_footers(doc: docx.Document) -> str:
 import zipfile
 import xml.etree.ElementTree as ET
 
+import zipfile
+import xml.etree.ElementTree as ET
+
 def parse_docx(file_path: str) -> str:
     """
-    Robust DOCX text extractor.
-    - Does NOT rely on python-docx
-    - Avoids lxml xpath incompatibility
+    More accurate DOCX text extractor.
+    - Preserves paragraph boundaries
+    - Avoids inserting newlines between runs
+    - Handles tabs and line breaks
     """
     try:
         with zipfile.ZipFile(file_path) as z:
@@ -217,15 +221,34 @@ def parse_docx(file_path: str) -> str:
                 tree = ET.parse(f)
                 root = tree.getroot()
 
-        # DOCX namespace
         ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
-        texts = []
-        for node in root.iter():
-            if node.tag.endswith("}t") and node.text:
-                texts.append(node.text)
+        paras = []
+        for p in root.findall(".//w:p", ns):
+            parts = []
+            # Iterate through the paragraph’s children in order
+            for node in p.iter():
+                tag = node.tag
 
-        return "\n".join(texts).strip()
+                # Text node
+                if tag == f"{{{ns['w']}}}t" and node.text:
+                    parts.append(node.text)
+
+                # Tab
+                elif tag == f"{{{ns['w']}}}tab":
+                    parts.append("\t")
+
+                # Line break / carriage return
+                elif tag in (f"{{{ns['w']}}}br", f"{{{ns['w']}}}cr"):
+                    parts.append("\n")
+
+            text = "".join(parts).strip()
+            if text:
+                # Normalize: collapse excessive internal whitespace a bit (optional)
+                paras.append(text)
+
+        # Join paragraphs with single newline (or "\n\n" if you prefer)
+        return "\n".join(paras).strip()
 
     except Exception as e:
         print(f"[parse_docx] failed: {e}")

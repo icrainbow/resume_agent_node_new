@@ -52,6 +52,8 @@ import { generateCvDownloadsAction } from "./actions/export";
 import { loadUserSchemaFileAction } from "./actions/schema_upload";
 import { generatePdfAction, refreshPreviewAction } from "./actions/pdf";
 
+import { devBootstrapAction } from "./actions/dev_bootstrap";
+
 const DEFAULT_NOTICE_LOCAL = DEFAULT_NOTICE;
 
 /**
@@ -102,6 +104,12 @@ export function useAutoModeController(opts: ControllerOpts) {
     return init;
   });
 
+    // ✅ Always-latest state ref (to avoid stale closure in async flows)
+  const stRef = useRef<State>(st);
+  useEffect(() => {
+    stRef.current = st;
+  }, [st]);
+
   /** --------- refs (stable) ---------- */
   const sectionsRef = useRef<Section[]>([]);
   useEffect(() => {
@@ -150,27 +158,120 @@ export function useAutoModeController(opts: ControllerOpts) {
   const setNotice = (notice: string) => gates.setNotice(dispatch, notice);
 
   // Step C: schema commit = validate only (fail-closed), never auto-fix
-  const commitSchemaCandidateOrBlock = (args: {
-    candidate: any;
-    source:
-      | "user_upload"
-      | "parse_baseline"
-      | "adjust_structure"
-      | "chat"
-      | "unknown";
-    onAccepted?: (validated: any) => void;
-    onBlocked?: (validation: any) => void;
-  }) => {
-    const { candidate, source, onAccepted, onBlocked } = args;
-    return dbg.commitSchemaCandidateOrBlock({
-      st,
-      dispatch,
-      candidate,
-      source,
-      onAccepted,
-      onBlocked,
-    });
+const commitSchemaCandidateOrBlock = (args: {
+  candidate: any;
+  source:
+    | "user_upload"
+    | "parse_baseline"
+    | "adjust_structure"
+    | "chat"
+    | "unknown";
+  onAccepted?: (validated: any) => void;
+  onBlocked?: (validation: any) => void;
+}) => {
+  const { candidate, source, onAccepted, onBlocked } = args;
+
+  const wrapped = {
+    ...args,
+
+    onAccepted: (validated: any) => {
+      console.log("[DEV][SCHEMA COMMIT][ACCEPTED]", {
+        source,
+        hasGroups: Array.isArray(validated?.groups),
+        groups: validated?.groups?.length,
+        sections: validated?.sections?.length,
+      });
+if (process.env.NODE_ENV !== "production") {
+  const v = validated ?? candidate; // 看你代码里哪个是最终schema
+  const groups = Array.isArray((v as any)?.groups) ? (v as any).groups : [];
+  const sections = Array.isArray((v as any)?.sections) ? (v as any).sections : [];
+
+  console.groupCollapsed("[DEBUG][SCHEMA] validated schema detail");
+  console.log("groups.length =", groups.length);
+  console.log("sections.length =", sections.length);
+
+  // 1) 打印 groups 关键字段 + 类型
+  console.table(
+    groups.map((g: any, i: number) => ({
+      i,
+      id: g?.id,
+      idType: typeof g?.id,
+      title: g?.title,
+      anchor: g?.anchor,
+      anchorType: typeof g?.anchor,
+    }))
+  );
+
+  // 2) 打印 leaf sections 关键字段 + 类型 + 可能的契约字段
+  console.table(
+    sections.map((s: any, i: number) => ({
+      i,
+      id: s?.id,
+      idType: typeof s?.id,
+      title: s?.title,
+      parentId: s?.parentId ?? s?.parent_id ?? null,
+      parentIdType: typeof (s?.parentId ?? s?.parent_id),
+      isGroup: s?.isGroup,
+      isGroupType: typeof s?.isGroup,
+      anchor: s?.anchor,
+      start: s?.start,
+      end: s?.end,
+      match: s?.match,
+      pattern: s?.pattern,
+    }))
+  );
+
+  // 3) 缺失字段统计（用于快速对齐后端契约）
+  const missing = {
+    parentId: 0,
+    isGroup: 0,
+    anchorOrPatternOrMatch: 0,
   };
+
+  for (const s of sections) {
+    const pid = s?.parentId ?? s?.parent_id ?? null;
+    if (!pid) missing.parentId++;
+    if (typeof s?.isGroup !== "boolean") missing.isGroup++;
+
+    const hasLocator =
+      !!s?.anchor || !!s?.pattern || !!s?.match || (s?.start != null && s?.end != null);
+    if (!hasLocator) missing.anchorOrPatternOrMatch++;
+  }
+
+  console.log("[DEBUG][SCHEMA] missing summary:", missing);
+  console.groupEnd();
+}
+
+      if (onAccepted) onAccepted(validated);
+    },
+
+    onBlocked: (validation: any) => {
+      // 🔴 关键：强制打印可读 JSON
+      try {
+        console.error(
+          "[DEV][SCHEMA COMMIT][BLOCKED JSON]",
+          JSON.stringify(validation, null, 2)
+        );
+      } catch (e) {
+        console.error("[DEV][SCHEMA COMMIT][BLOCKED RAW]", validation);
+      }
+
+      if (onBlocked) onBlocked(validation);
+    },
+  };
+
+  const ok = dbg.commitSchemaCandidateOrBlock({
+    st,
+    dispatch,
+    candidate: wrapped.candidate,
+    source: wrapped.source,
+    onAccepted: wrapped.onAccepted,
+    onBlocked: wrapped.onBlocked,
+  });
+
+  console.log("[DEV][SCHEMA COMMIT][RETURNED]", ok, { source });
+  return ok;
+};
 
   /** --------- gates ---------- */
   const requireJdText = () => gates.requireJdText(st, dispatch);
@@ -189,6 +290,28 @@ export function useAutoModeController(opts: ControllerOpts) {
     commitSchemaCandidateOrBlock,
   });
 };
+
+  /** =========================
+   * FetchPublicFile for DEV Testing Purpose
+   * ========================= */
+  async function fetchPublicFileAsFile(
+    url: string,
+    filename: string,
+    mime: string
+  ): Promise<File> {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) {
+      console.error("[DEV BOOTSTRAP] Cannot find public file", {
+        filename,
+        url,
+        status: r.status,
+        statusText: r.statusText,
+      });
+      throw new Error(`Cannot find public file: ${filename} (GET ${url}, ${r.status})`);
+    }
+    const blob = await r.blob();
+    return new File([blob], filename, { type: mime });
+  }
 
 
   /** =========================
@@ -216,6 +339,27 @@ export function useAutoModeController(opts: ControllerOpts) {
       constraintsBaselineRef,
     });
   };
+
+  const devBootstrap = async () => {
+  // only allow in dev
+  console.log("[DEV][BOOTSTRAP] clicked, NODE_ENV=", process.env.NODE_ENV);
+
+  if (process.env.NODE_ENV !== "development") {
+    setNotice("Dev bootstrap is only available in development.");
+    return;
+  }
+
+  try {
+    await devBootstrapAction({
+      st,
+      dispatch,
+      commitSchemaCandidateOrBlock,
+      parseCv, // 自动跑 parse；如果你想只加载不 parse，把 parseCv 这行删掉
+    });
+  } catch (e: any) {
+    setNotice(e?.message || "Dev bootstrap failed.");
+  }
+};
 
   /** =========================
    * Chat adjust structure (moved to action)
@@ -370,13 +514,35 @@ export function useAutoModeController(opts: ControllerOpts) {
   /** =========================
    * InputsPanel-facing computed flags (Page expects these names)
    * ========================= */
+
+  /** =========================
+   * InputsPanel-facing computed flags (Page expects these names)
+   * ========================= */
+
+  const schemaReady = !!st.currentSchema;
+
   const parseDisabled = useMemo(() => {
-    if (st.parseBusy) return true;
-    if (!st.resumeFile) return true;
-    if (!st.schemaFile) return true;
-    if (!st.schemaProvidedByUser) return true;
-    return false;
-  }, [st.parseBusy, st.resumeFile, st.schemaFile, st.schemaProvidedByUser]);
+    console.log("[DEV][PARSE GATE]", {
+      resumeFile: !!st.resumeFile,
+      schemaFile: !!st.schemaFile,
+      schemaProvidedByUser: st.schemaProvidedByUser,
+      currentSchema: !!st.currentSchema,
+      parseBusy: st.parseBusy,
+    });
+
+    return (
+      !st.resumeFile ||
+      !st.schemaFile ||
+      !schemaReady ||
+      st.parseBusy
+    );
+  }, [
+    st.resumeFile,
+    st.schemaFile,
+    st.schemaProvidedByUser,
+    st.currentSchema,
+    st.parseBusy,
+  ]);
 
   const jdHint = useMemo(() => {
     if (!st.jdFile && !st.jdText.trim())
@@ -384,6 +550,7 @@ export function useAutoModeController(opts: ControllerOpts) {
     if (st.jdFile && !st.jdText.trim()) return "Parsing JD…";
     return "You may edit JD text before optimizing.";
   }, [st.jdFile, st.jdText]);
+
 
   const wholeCvDisabled = useMemo(() => {
     if (st.autoOptimizing) return true;
@@ -565,6 +732,9 @@ const generatePdf = async () => {
     );
   }, [st.currentSchemaDebug, st.currentSchema, st.sections]);
 
+
+
+
   /** =========================
    * Return (must match Page.tsx fields)
    * ========================= */
@@ -589,6 +759,9 @@ const generatePdf = async () => {
     openById: st.openById,
     openGroups: st.openGroups,
     cvSectionsConfirmed: st.cvSectionsConfirmed,
+
+    schemaProvidedByUser: st.schemaProvidedByUser,
+    currentSchema: st.currentSchema,
 
     notice: st.notice,
     jobId: st.jobId,
@@ -640,10 +813,17 @@ const generatePdf = async () => {
 
     // setters expected by Page
     setNotice,
-    setResumeFile: (f: File | null) =>
-      dispatch({ type: "SET", patch: { resumeFile: f } }),
-    setJdFile: (f: File | null) =>
-      dispatch({ type: "SET", patch: { jdFile: f } }),
+
+    setResumeFile: (f: File | null) => {
+      console.log("[setResumeFile]", f?.name, f?.size);
+      dispatch({ type: "SET", patch: { resumeFile: f } });
+    },
+
+    setJdFile: (f: File | null) => {
+      console.log("[setJdFile]", f?.name, f?.size);
+      dispatch({ type: "SET", patch: { jdFile: f } });
+    },
+
     setJdText: (v: string) => dispatch({ type: "SET", patch: { jdText: v } }),
     setWholeCvNotes: (v: string) =>
       dispatch({ type: "SET", patch: { wholeCvNotes: v } }),
@@ -676,5 +856,7 @@ const generatePdf = async () => {
     onMergeReplaceOne,
     resetAll,
     handleChatUpdate,
+    devBootstrap,
+
   };
 }

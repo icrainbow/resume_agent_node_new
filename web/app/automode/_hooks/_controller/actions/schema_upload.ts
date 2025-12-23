@@ -22,9 +22,19 @@ export async function loadUserSchemaFileAction(args: {
 }) {
   const { file, dispatch, commitSchemaCandidateOrBlock } = args;
 
+  // ===== DEV logs (safe in prod; low volume) =====
+  console.log("[schema_upload] loadUserSchemaFileAction called", {
+    hasFile: !!file,
+    name: file?.name,
+    size: file?.size,
+    type: file?.type,
+  });
+
+  // Always reflect selected file in state first
   dispatch({ type: "SET", patch: { schemaFile: file } });
 
   if (!file) {
+    console.log("[schema_upload] file is null -> clearing schema state");
     dispatch({
       type: "SET",
       patch: {
@@ -45,17 +55,36 @@ export async function loadUserSchemaFileAction(args: {
   }
 
   try {
+    // Read raw text
     const rawText = await file.text();
+    console.log("[schema_upload] schema file read ok", {
+      name: file.name,
+      rawTextLen: rawText?.length ?? 0,
+      head: (rawText || "").slice(0, 120),
+    });
+
     dispatch({ type: "SET", patch: { schemaRawText: rawText } });
 
+    // Parse JSON
     let obj: any;
     try {
       obj = JSON.parse(rawText);
-    } catch {
+      console.log("[schema_upload] JSON.parse ok", {
+        hasGroups: Array.isArray(obj?.groups),
+        groupsLen: Array.isArray(obj?.groups) ? obj.groups.length : null,
+        hasSections: Array.isArray(obj?.sections),
+        sectionsLen: Array.isArray(obj?.sections) ? obj.sections.length : null,
+      });
+    } catch (err) {
+      console.error("[schema_upload] JSON.parse failed", err);
       throw new Error("Schema file is not valid JSON.");
     }
 
-    if (!isValidSchema(obj)) {
+    // Validate shape
+    const valid = isValidSchema(obj);
+    console.log("[schema_upload] isValidSchema =", valid);
+
+    if (!valid) {
       dispatch({
         type: "SET",
         patch: {
@@ -67,6 +96,7 @@ export async function loadUserSchemaFileAction(args: {
       return;
     }
 
+    // Normalize isGroup default
     const normalized = {
       ...obj,
       sections: obj.sections.map((s: any) => ({
@@ -75,10 +105,26 @@ export async function loadUserSchemaFileAction(args: {
       })),
     };
 
+    console.log("[schema_upload] normalized schema ready", {
+      sectionsLen: Array.isArray(normalized.sections) ? normalized.sections.length : null,
+      groupsLen: Array.isArray(normalized.groups) ? normalized.groups.length : null,
+    });
+
+    // Commit via fail-closed validator
+    console.log("[schema_upload] commitSchemaCandidateOrBlock -> calling");
     const accepted = commitSchemaCandidateOrBlock({
       candidate: normalized,
       source: "user_upload",
       onAccepted: (validated) => {
+        console.log("[schema_upload] commit accepted", {
+          validatedSectionsLen: Array.isArray(validated?.sections)
+            ? validated.sections.length
+            : null,
+          validatedGroupsLen: Array.isArray(validated?.groups)
+            ? validated.groups.length
+            : null,
+        });
+
         dispatch({
           type: "SET",
           patch: {
@@ -95,7 +141,9 @@ export async function loadUserSchemaFileAction(args: {
           },
         });
       },
-      onBlocked: () => {
+      onBlocked: (validation) => {
+        console.warn("[schema_upload] commit BLOCKED by validator", validation);
+
         dispatch({
           type: "SET",
           patch: {
@@ -108,13 +156,20 @@ export async function loadUserSchemaFileAction(args: {
             debugPromptText: "",
             schemaDirty: false,
             pendingRequirements: null,
+            // ✅ 给你一个明确提示，避免看起来“吞了”
+            notice:
+              "Schema loaded but blocked by validator (commitSchemaCandidateOrBlock). Check Debug Panel / validator logs.",
           },
         });
       },
     });
 
+    console.log("[schema_upload] commitSchemaCandidateOrBlock returned", accepted);
+
     if (!accepted) return;
   } catch (e: any) {
+    console.error("[schema_upload] failed", e);
+
     dispatch({
       type: "SET",
       patch: {

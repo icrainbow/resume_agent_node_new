@@ -17,13 +17,9 @@
 from __future__ import annotations
 
 from typing import List, Dict, Optional, Tuple, Any
-import os
-import re
-import json
-import shutil
-import subprocess
-from dataclasses import dataclass
 
+import os, re, json, shutil, subprocess
+from dataclasses import dataclass
 
 from docx import Document
 
@@ -356,81 +352,156 @@ def _strip_leading_header_block(text: str, start_marker: str) -> str:
 
     return text.strip()
 
+import re
+from typing import Any
+
+_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9 &/\-]{2,}$")  # e.g. "PROFESSIONAL EXPERIENCE"
+_HEADING_RE2 = re.compile(r"^[A-Z][A-Za-z0-9 &/\-]{2,}$")  # looser, e.g. "Core Skills"
+
+def _looks_like_heading(line: str, _unused: object = None) -> bool:
+    s = (line or "").strip()
+    if not s:
+        return False
+
+    # very simple heuristic (够用就行)
+    if len(s) <= 2:
+        return True
+
+    # all-caps style headings
+    letters = [c for c in s if c.isalpha()]
+    if letters:
+        upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+        if upper_ratio >= 0.85 and len(s) <= 60:
+            return True
+
+    # common resume headings
+    common = (
+        "summary", "skills", "experience", "education", "certifications",
+        "publications", "patents", "projects"
+    )
+    low = s.lower()
+    if any(k in low for k in common) and len(s) <= 60:
+        return True
+
+    return False
 
 # -----------------------------
 # Main splitter
 # -----------------------------
 
 def split_resume_by_schema(raw: str, schema: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Schema-driven splitter (strict-ish).
-    Key behaviors:
-      1) Robust heading matching: tolerant to PDF extraction breaking words with newlines/spaces.
-      2) For child sections with parentId: search start/end preferably AFTER the group anchor.
-      3) Output order is by actual start_idx; group node is positioned at min(child start_idx, group title idx).
-      4) Each leaf section text strips the leading header block (removes duplicated headings in UI).
-    """
     if not raw or not raw.strip():
         return []
 
+    # IMPORTANT:
+    # - We build group nodes from schema["groups"] (structure only, no text slicing).
+    # - We slice text ONLY for leaf items from schema["sections"] where isGroup is False.
     groups = schema.get("groups") or []
     sections = schema.get("sections") or []
     if not isinstance(groups, list) or not isinstance(sections, list):
         return []
 
-    # Build normalized mapping ONCE for stable fuzzy matches
     norm_pack = _build_norm_map(raw)
 
-    # -------------
-    # 1) Locate group anchors (by group.title)
-    # -------------
+    # -----------------------------
+    # 1) Locate group anchors (for scoping searches)
+    # -----------------------------
     group_anchor: Dict[str, int] = {}
     for g in groups:
         gid = str(g.get("id", "")).strip()
-        gtitle = str(g.get("title", "")).strip()
+        title = str(g.get("title", "")).strip()
         if not gid:
             continue
-        anchor = _find_heading_idx_fuzzy(raw, gtitle, 0, norm_pack) if gtitle else -1
-        group_anchor[gid] = anchor  # may be -1
+        idx = _find_heading_idx_fuzzy(raw, title, 0, norm_pack) if title else -1
+        group_anchor[gid] = idx
 
-    # -------------
-    # 2) Extract spans for each section
-    # -------------
+    # -----------------------------
+    # 2) Extract leaf spans ONLY (do NOT slice groups)
+    # -----------------------------
     spans: List[_Span] = []
-
     for sec in sections:
         sid = str(sec.get("id", "")).strip()
         title = str(sec.get("title", sid)).strip() or sid
-        start = str(sec.get("start", "") or "").strip()
-        end = str(sec.get("end", "") or "").strip()
+        parentId = str(sec.get("parentId")).strip() if sec.get("parentId") else None
+        is_group = bool(sec.get("isGroup"))
 
-        parentId = sec.get("parentId", None)
-        parentId = str(parentId).strip() if parentId is not None else None
-
-        if not sid or not start:
+        if not sid:
             continue
 
-        # Prefer searching after group anchor for child sections
+        # ✅ Skip group items in sections list; groups are structural only.
+        if is_group:
+            continue
+
+        if sid == "1.1":
+            print("[dbg] group_anchor[1] =", group_anchor.get("1"))
+            ga = group_anchor.get("1", -1)
+            if ga >= 0:
+                print("[dbg] raw[ga:ga+8] =", repr(raw[ga:ga+8]))
+
+        start_candidates = _get_anchor_candidates(sec, "start")
+        end_candidates = _get_anchor_candidates(sec, "end")
+
         search_from = 0
         if parentId and parentId in group_anchor and group_anchor[parentId] >= 0:
             search_from = group_anchor[parentId]
 
-        s_idx = _find_heading_idx_fuzzy(raw, start, search_from, norm_pack)
-        if s_idx < 0:
-            # fallback global search (still schema-driven)
-            s_idx = _find_heading_idx_fuzzy(raw, start, 0, norm_pack)
-        if s_idx < 0:
-            continue
+        # ---- find start ----
+        s_idx = -1
+        chosen_start = ""
 
-        if end:
-            e_idx = _find_heading_idx_fuzzy(raw, end, s_idx + 1, norm_pack)
-            if e_idx < 0:
-                e_idx = len(raw)
-        else:
+        for cand in start_candidates:
+            s_idx = _find_heading_idx_fuzzy(raw, cand, search_from, norm_pack)
+            if s_idx >= 0:
+                chosen_start = cand
+                break
+
+        if s_idx < 0:
+            for cand in start_candidates:
+                s_idx = _find_heading_idx_fuzzy(raw, cand, 0, norm_pack)
+                if s_idx >= 0:
+                    chosen_start = cand
+                    break
+
+        # ---- fallback: DO NOT DROP LEAF ----
+        if s_idx < 0:
+            if parentId and group_anchor.get(parentId, -1) >= 0:
+                # avoid chopping the first letter of the heading; only skip whitespace
+                s_idx = group_anchor[parentId]
+                while 0 <= s_idx < len(raw) and raw[s_idx] in "\r\n\t ":
+                    s_idx += 1
+            else:
+                s_idx = 0
+
+        # ---- find end ----
+        e_idx = -1
+        if end_candidates:
+            for cand in end_candidates:
+                e_idx = _find_heading_idx_fuzzy(raw, cand, s_idx + 1, norm_pack)
+                if e_idx >= 0:
+                    break
+
+        if e_idx < 0:
+            # try next group boundary
+            next_group_pos = min(
+                [v for v in group_anchor.values() if v > s_idx],
+                default=len(raw),
+            )
+            e_idx = next_group_pos if next_group_pos > s_idx else len(raw)
+
+        if e_idx <= s_idx:
             e_idx = len(raw)
 
         text = raw[s_idx:e_idx].strip()
-        text = _strip_leading_header_block(text, start)
+
+        # ---- FIX: strip header by using ACTUAL first line (prevents "ROFESSIONAL" bug) ----
+        if text:
+            lines = text.splitlines()
+            first_line = (lines[0] or "").strip()
+            if first_line and _looks_like_heading(first_line, title):
+                j = 1
+                while j < len(lines) and not (lines[j] or "").strip():
+                    j += 1
+                text = "\n".join(lines[j:]).strip()
 
         spans.append(
             _Span(
@@ -443,60 +514,166 @@ def split_resume_by_schema(raw: str, schema: Dict[str, Any]) -> List[Dict[str, A
             )
         )
 
-    # -------------
-    # 3) Build group nodes positioned by anchor/min child start
-    # -------------
+    # -----------------------------
+    # 3) Build group nodes (structure only)
+    # -----------------------------
     earliest_child: Dict[str, int] = {}
     for sp in spans:
-        if not sp.parentId:
-            continue
-        earliest_child[sp.parentId] = min(earliest_child.get(sp.parentId, 10**18), sp.start_idx)
+        if sp.parentId:
+            earliest_child[sp.parentId] = min(
+                earliest_child.get(sp.parentId, 10**18),
+                sp.start_idx,
+            )
 
     group_nodes: List[Tuple[int, Dict[str, Any]]] = []
     for g in groups:
         gid = str(g.get("id", "")).strip()
-        gtitle = str(g.get("title", "")).strip() or gid
+        title = str(g.get("title", gid)).strip()
         if not gid:
             continue
 
-        anchor = group_anchor.get(gid, -1)
-        child_pos = earliest_child.get(gid, 10**18)
-
-        pos_candidates: List[int] = []
-        if anchor >= 0:
-            pos_candidates.append(anchor)
-        if child_pos != 10**18:
-            pos_candidates.append(child_pos)
-
-        pos = min(pos_candidates) if pos_candidates else 10**18
-
-        group_nodes.append((pos, {"id": gid, "title": gtitle, "text": "", "parentId": None, "isGroup": True}))
-
-    # -------------
-    # 4) Sort all nodes by their position (document order)
-    # -------------
-    sec_nodes: List[Tuple[int, Dict[str, Any]]] = []
-    for sp in spans:
-        sec_nodes.append(
-            (sp.start_idx, {"id": sp.sec_id, "title": sp.title, "text": sp.text, "parentId": sp.parentId, "isGroup": False})
+        pos = min(
+            [
+                p
+                for p in [group_anchor.get(gid, -1), earliest_child.get(gid)]
+                if p is not None and p >= 0
+            ],
+            default=10**18,
         )
 
-    all_nodes = group_nodes + sec_nodes
+        group_nodes.append(
+            (pos, {"id": gid, "title": title, "text": "", "parentId": None, "isGroup": True})
+        )
+
+    # -----------------------------
+    # 4) Merge & sort (group first, leaf after)
+    # -----------------------------
+    all_nodes: List[Tuple[int, Dict[str, Any]]] = []
+    for pos, gnode in group_nodes:
+        all_nodes.append((pos, gnode))
+
+    for sp in spans:
+        # +1 ensures leaf never collides with group at same anchor
+        all_nodes.append(
+            (
+                sp.start_idx + 1,
+                {
+                    "id": sp.sec_id,
+                    "title": sp.title,
+                    "text": sp.text,
+                    "parentId": sp.parentId,
+                    "isGroup": False,
+                },
+            )
+        )
+
     all_nodes.sort(key=lambda x: (x[0], 0 if x[1].get("isGroup") else 1))
 
-    # -------------
-    # 5) Deduplicate by id
-    # -------------
+    # -----------------------------
+    # 5) Safe de-dup (id + isGroup)
+    # -----------------------------
     seen = set()
     out: List[Dict[str, Any]] = []
     for _, node in all_nodes:
-        nid = node.get("id")
-        if not nid or nid in seen:
+        key = (node.get("id"), bool(node.get("isGroup")))
+        if key in seen:
             continue
-        seen.add(nid)
+        seen.add(key)
         out.append(node)
 
+    # -----------------------------
+    # 6) Debug prints (dev only, safe)
+    # -----------------------------
+    if os.environ.get("DEBUG_SPLIT") == "1":
+        print(
+            "[dbg][split]",
+            "total=", len(out),
+            "groups=", sum(1 for x in out if x.get("isGroup")),
+            "leaves=", sum(1 for x in out if not x.get("isGroup")),
+        )
+        for i, item in enumerate(out):
+            sid_dbg = item.get("id")
+            title_dbg = item.get("title")
+            text_dbg = item.get("text") or ""
+            print("\n==== SPLIT", i, sid_dbg, title_dbg, "len=", len(text_dbg))
+            print(text_dbg[:1200])
+
     return out
+
+def _get_anchor_candidates(sec: Any, which: str) -> List[str]:
+    """
+    Return anchor candidate strings for a section.
+
+    Expected schema styles:
+      1) sec["anchors"] = {"start":[...], "end":[...]}   (your current JSON)
+      2) sec["anchor"] / sec["start"] / sec["end"] etc. (tolerant fallback)
+
+    `which` should be "start" or "end".
+    """
+    if not isinstance(which, str) or which not in ("start", "end"):
+        return []
+
+    # sec must be a dict
+    if not isinstance(sec, dict):
+        return []
+
+    # Primary: sec["anchors"][which]
+    anchors = sec.get("anchors")
+    if isinstance(anchors, dict):
+        v = anchors.get(which)
+        return _normalize_candidates(v)
+
+    # Fallbacks (tolerant)
+    # e.g. sec["start"] / sec["end"]
+    v = sec.get(which)
+    if v is not None:
+        return _normalize_candidates(v)
+
+    # e.g. sec["anchor"] could store a string/list
+    v = sec.get("anchor")
+    if v is not None:
+        return _normalize_candidates(v)
+
+    return []
+
+
+def _normalize_candidates(v: Any) -> List[str]:
+    """
+    Normalize candidate(s) to a list[str], filter empty.
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    if isinstance(v, (int, float)):
+        s = str(v).strip()
+        return [s] if s else []
+    if isinstance(v, list):
+        out: List[str] = []
+        for x in v:
+            if x is None:
+                continue
+            if isinstance(x, str):
+                s = x.strip()
+                if s:
+                    out.append(s)
+            elif isinstance(x, (int, float)):
+                s = str(x).strip()
+                if s:
+                    out.append(s)
+            else:
+                # if someone accidentally put objects inside, stringify lightly
+                s = str(x).strip()
+                if s and s not in ("{}", "[]"):
+                    out.append(s)
+        return out
+    if isinstance(v, dict):
+        # If someone passed {"start":[...],"end":[...]} directly here,
+        # pick nothing; the caller should pass sec not anchors dict.
+        return []
+    return []
+
 
 
 def split_resume_by_headlines(raw: str) -> List[Dict[str, Any]]:

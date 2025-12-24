@@ -421,7 +421,7 @@ export default function Page() {
   // ✅ NEW: context payload for /api/agent (safe, minimal, derived from ctrl)
   const agentContext = {
     has_resume: !!ctrl.resumeFile,
-    has_schema: !!ctrl.chatSchema,
+    has_schema: !!ctrl.schemaFile || !!ctrl.chatSchema,
     has_jd: !!(ctrl.jdText && ctrl.jdText.trim().length > 0) || !!ctrl.jdFile,
     sections_count: Array.isArray(ctrl.sections) ? ctrl.sections.length : 0,
     cv_sections_confirmed: !!ctrl.cvSectionsConfirmed,

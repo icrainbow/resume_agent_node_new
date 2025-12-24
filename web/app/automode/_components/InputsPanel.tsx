@@ -181,6 +181,7 @@ export default function InputsPanel(props: Props) {
             accept=".json,application/json"
             className="hidden"
             data-testid="upload-schema"
+            data-action="upload-schema"
             onChange={async (e) => {
               const f = e.target.files?.[0] || null;
               await loadUserSchemaFile(f);
@@ -191,6 +192,7 @@ export default function InputsPanel(props: Props) {
             <label
               htmlFor="schema-upload"
               data-testid="btn-upload-schema"
+              data-action="upload-schema"
               className={`${ui.BTN_BASE} ${ui.BTN_SM} ${ui.BTN_OUTLINE} cursor-pointer`}
             >
               {schemaBtnText}

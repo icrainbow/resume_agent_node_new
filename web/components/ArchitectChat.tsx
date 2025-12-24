@@ -418,14 +418,17 @@ Never output schema JSON in chat mode.
       "upload schema": () =>
         clickUi(
           [
+            // ✅ prefer the clickable label/button
             "[data-testid='btn-upload-schema']",
+            // ✅ fallback: explicit input (some browsers allow click to open picker)
+            "#schema-upload",
             "[data-testid='upload-schema']",
+            // ✅ last resort
             "[data-action='upload-schema']",
-            "input[type='file'][name='schema']",
-            "input[type='file'][accept*='json']",
           ],
-          ["upload schema", "upload section schema", "schema"]
+          ["upload schema", "upload cv schema", "schema"]
         ),
+
     };
 
     const key = raw.toLowerCase();

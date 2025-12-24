@@ -128,11 +128,20 @@ class ParseReq(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ParseDiagnostics(BaseModel):
+    """Diagnostic information about parsing results (safe for UI display)"""
+    warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings")
+    schema_issues: List[str] = Field(default_factory=list, description="Schema contract problems")
+    stats: Dict[str, Any] = Field(default_factory=dict, description="Parsing statistics")
+    summary: str = Field(default="", description="Short human-readable summary")
+
+
 class ParseResp(BaseModel):
     ok: bool
     error: Optional[str] = None
     raw_text: str = ""
     sections: List[Section] = Field(default_factory=list)
+    diagnostics: Optional[ParseDiagnostics] = None
 
 
 class OptimizeReq(BaseModel):
@@ -307,6 +316,164 @@ def _schema_leaf_locator_stats(schema_obj: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_schema_anchors(schema_obj: Dict[str, Any]) -> List[str]:
+    """
+    Extract anchor strings from schema for validation.
+    Collects 'start', 'end', 'anchor', 'pattern' from all sections (groups and leaves).
+    Returns list of non-empty anchor strings.
+    """
+    anchors: List[str] = []
+    sections = schema_obj.get("sections", [])
+
+    if not isinstance(sections, list):
+        return anchors
+
+    for s in sections:
+        if not isinstance(s, dict):
+            continue
+
+        # Collect various anchor/locator fields
+        for field in ("start", "end", "anchor", "pattern", "match"):
+            val = s.get(field)
+            if val and isinstance(val, str) and val.strip():
+                anchors.append(val.strip())
+
+    return anchors
+
+
+def _check_schema_anchor_match(
+    schema_obj: Dict[str, Any],
+    raw_text: str,
+) -> Dict[str, Any]:
+    """
+    Check if schema anchors appear in the document.
+    Returns dict with:
+        - total: number of anchors
+        - matched: number of anchors found in raw_text
+        - match_ratio: matched/total (0.0 to 1.0)
+        - should_fallback: True if match rate too low
+        - reason: explanation if should_fallback
+    """
+    anchors = _extract_schema_anchors(schema_obj)
+
+    if not anchors:
+        # No anchors found in schema - can't validate, allow parsing
+        return {
+            "total": 0,
+            "matched": 0,
+            "match_ratio": 0.0,
+            "should_fallback": False,
+            "reason": None,
+        }
+
+    # Normalize raw_text for case-insensitive matching
+    raw_upper = raw_text.upper()
+
+    matched = 0
+    for anchor in anchors:
+        # Normalize anchor (strip whitespace, uppercase)
+        anchor_normalized = anchor.strip().upper()
+        if anchor_normalized and anchor_normalized in raw_upper:
+            matched += 1
+
+    total = len(anchors)
+    match_ratio = matched / total if total > 0 else 0.0
+
+    # Fallback conditions:
+    # 1. If we have at least 2 anchors and NONE matched -> definite mismatch
+    # 2. If match ratio < 10% -> likely wrong schema
+    should_fallback = False
+    reason = None
+
+    if total >= 2 and matched == 0:
+        should_fallback = True
+        reason = f"Schema has {total} anchors but NONE found in document - schema does not match document structure"
+    elif match_ratio < 0.1:
+        should_fallback = True
+        reason = f"Schema anchor match rate too low: {matched}/{total} ({match_ratio:.1%}) - threshold: 10%"
+
+    return {
+        "total": total,
+        "matched": matched,
+        "match_ratio": match_ratio,
+        "should_fallback": should_fallback,
+        "reason": reason,
+    }
+
+
+def _build_parse_diagnostics(
+    schema_obj: Optional[Dict[str, Any]],
+    schema_source: Optional[str],
+    sections_normalized: List[Section],
+    mode: str,
+    raw_text_len: int,
+    fallback_reason: Optional[str] = None,
+    anchor_stats: Optional[Dict[str, Any]] = None,
+) -> ParseDiagnostics:
+    """
+    Build diagnostics object from parsing results.
+    Safe for UI display (no file paths, no secrets).
+    """
+    warnings: List[str] = []
+    schema_issues: List[str] = []
+
+    # Count sections
+    total = len(sections_normalized)
+    groups = sum(1 for s in sections_normalized if s.isGroup)
+    leaves = sum(1 for s in sections_normalized if not s.isGroup)
+
+    # Build stats
+    stats: Dict[str, Any] = {
+        "total_sections": total,
+        "leaf_sections": leaves,
+        "group_sections": groups,
+        "parsing_mode": mode,
+    }
+
+    # Add anchor validation stats if available
+    if anchor_stats:
+        stats["schema_anchor_total"] = anchor_stats.get("total", 0)
+        stats["schema_anchor_matched"] = anchor_stats.get("matched", 0)
+        stats["schema_anchor_match_ratio"] = anchor_stats.get("match_ratio", 0.0)
+
+    # Add schema source (safe: just "inline" or filename without path)
+    if schema_source:
+        if schema_source.startswith("path:"):
+            # Extract just filename, not full path
+            from pathlib import Path
+            try:
+                filename = Path(schema_source.replace("path:", "")).name
+                stats["schema_source"] = f"file:{filename}"
+            except Exception:
+                stats["schema_source"] = "file"
+        else:
+            stats["schema_source"] = schema_source
+    elif mode == "fallback_unknown":
+        stats["schema_source"] = "none"
+
+    # Build summary based on mode
+    if mode == "schema":
+        summary = f"Parsed {total} sections ({leaves} leaf, {groups} groups) using schema."
+    elif mode == "fallback_unknown":
+        if fallback_reason:
+            summary = f"Schema fallback: {fallback_reason}. Returned entire document as single UNKNOWN section."
+        else:
+            summary = f"No schema provided - returned entire document as single UNKNOWN section (1 section, {raw_text_len} chars)."
+
+        if fallback_reason:
+            warnings.append("Schema was provided but parsing quality was insufficient")
+            schema_issues.append(fallback_reason)
+    else:
+        summary = f"Parsed {total} sections (mode={mode})."
+
+    return ParseDiagnostics(
+        warnings=warnings,
+        schema_issues=schema_issues,
+        stats=stats,
+        summary=summary,
+    )
+
+
 class ExtractReq(BaseModel):
     file_path: str
 
@@ -337,16 +504,23 @@ def extract(req: ExtractReq):
 @app.post("/parse", response_model=ParseResp)
 def parse(req: ParseReq):
     """
-    Parsing behavior:
-    - If schema (inline) OR schema_path is provided -> schema-driven parsing.
-    - If schema is NOT provided -> fallback headline-based splitting.
+    Parsing behavior (with fallback_unknown):
+    - If NO schema provided -> return ONE section: id="unknown", title="UNKNOWN", text=<full raw text>
+    - If schema provided -> schema-driven parsing
+    - If schema parsing quality too low -> fallback to UNKNOWN section (parsing_mode="fallback_unknown")
     """
     t0 = time.time()
 
     try:
         raw = _read_text(req.file_path)
         if not raw.strip():
-            return ParseResp(ok=False, error="parse failed: empty text")
+            diag = ParseDiagnostics(
+                warnings=["Document appears to be empty or unreadable"],
+                schema_issues=[],
+                stats={"total_sections": 0, "leaf_sections": 0, "group_sections": 0, "parsing_mode": "error"},
+                summary="Parse failed: empty or unreadable document",
+            )
+            return ParseResp(ok=False, error="parse failed: empty text", diagnostics=diag)
 
         schema_obj: Optional[Dict[str, Any]] = None
         schema_source = None
@@ -360,6 +534,7 @@ def parse(req: ParseReq):
             schema_source = f"path:{req.schema_path}"
 
         sections_raw: List[Dict[str, Any]] = []
+        anchor_stats: Optional[Dict[str, Any]] = None
 
         if schema_obj is not None:
             schema_name = (req.schema_name or schema_source or "schema").strip()
@@ -374,59 +549,106 @@ def parse(req: ParseReq):
                 for row in prev:
                     print("  ", row)
 
-            print("[worker][/parse] USING FILE:", __file__)
-            print("[worker][/parse] about to call split_resume_by_schema, schema_keys=", list(schema_obj.keys())[:20])
-            sections_raw = split_resume_by_schema(raw, schema_obj)
-            print("[worker][/parse] split_resume_by_schema returned:", len(sections_raw))
+            # ---- ANCHOR VALIDATION: Check if schema matches document ----
+            # Schema validity ≠ schema applicability; anchors must appear in document.
+            anchor_match = _check_schema_anchor_match(schema_obj, raw)
+            print(f"[worker][/parse][ANCHOR_CHECK] total={anchor_match['total']} matched={anchor_match['matched']} ratio={anchor_match['match_ratio']:.1%}")
 
-            # ---- run splitter ----
-            try:                
-                sections_raw = split_resume_by_schema(raw, schema_obj)
-            except Exception as se:
+            if anchor_match["should_fallback"]:
+                # Schema anchors not found in document - fallback to UNKNOWN
+                # EARLY RETURN to prevent any later code from overwriting sections
+                fallback_reason = anchor_match["reason"]
+                print(f"[worker][/parse][FALLBACK] {fallback_reason}")
+
+                # Build single UNKNOWN section
+                sections = [
+                    Section(
+                        id="unknown",
+                        title="UNKNOWN",
+                        text=raw,
+                        constraints="",
+                        parentId=None,
+                        isGroup=False,
+                    )
+                ]
+
+                # Build diagnostics with anchor stats
+                diagnostics = _build_parse_diagnostics(
+                    schema_obj=schema_obj,
+                    schema_source=schema_source,
+                    sections_normalized=sections,
+                    mode="fallback_unknown",
+                    raw_text_len=len(raw),
+                    fallback_reason=fallback_reason,
+                    anchor_stats=anchor_match,
+                )
+
+                print(f"[worker][/parse][RETURN] parsing_mode=fallback_unknown schema_anchor_total={anchor_match['total']} schema_anchor_matched={anchor_match['matched']} sections=1")
+                return ParseResp(ok=True, raw_text=raw, sections=sections, diagnostics=diagnostics)
+            else:
+                # Schema anchors found - proceed with schema parsing
+                print("[worker][/parse] USING FILE:", __file__)
+                print("[worker][/parse] about to call split_resume_by_schema, schema_keys=", list(schema_obj.keys())[:20])
+
+                # ---- run splitter ----
+                try:
+                    sections_raw = split_resume_by_schema(raw, schema_obj)
+                except Exception as se:
+                    dt = int((time.time() - t0) * 1000)
+                    print(f"[worker][/parse][ERR] split_resume_by_schema threw ms={dt} err={repr(se)}")
+                    diag = ParseDiagnostics(
+                        warnings=["Schema parsing crashed - check schema structure"],
+                        schema_issues=[f"Schema splitter error: {str(se)[:200]}"],
+                        stats={"total_sections": 0, "leaf_sections": 0, "group_sections": 0, "parsing_mode": "error"},
+                        summary=f"Schema parsing crashed: {str(se)[:100]}",
+                    )
+                    return ParseResp(ok=False, error=f"schema splitter crashed: {str(se)}", raw_text=raw, sections=[], diagnostics=diag)
+
+                print("[dbg] sections_raw_len=", len(sections_raw))
+                print(
+                    "[dbg] isGroup_count=",
+                    sum(1 for s in sections_raw if isinstance(s, dict) and s.get("isGroup")),
+                    "leaf_count=",
+                    sum(1 for s in sections_raw if isinstance(s, dict) and not s.get("isGroup")),
+                )
+                print("[dbg] sample=", sections_raw[:3])
+
+                if not sections_raw:
+                    diag = ParseDiagnostics(
+                        warnings=["Schema parsing produced 0 sections"],
+                        schema_issues=["Schema did not match document structure - no sections extracted"],
+                        stats={"total_sections": 0, "leaf_sections": 0, "group_sections": 0, "parsing_mode": "error"},
+                        summary=f"Schema parsing failed: 0 sections extracted (schema_name={schema_name})",
+                    )
+                    return ParseResp(
+                        ok=False,
+                        error=f"schema parsing produced 0 sections (schema_name={schema_name})",
+                        raw_text=raw,
+                        sections=[],
+                        diagnostics=diag,
+                    )
+
                 dt = int((time.time() - t0) * 1000)
-                print(f"[worker][/parse][ERR] split_resume_by_schema threw ms={dt} err={repr(se)}")
-                return ParseResp(ok=False, error=f"schema splitter crashed: {str(se)}", raw_text=raw, sections=[])
-
-            print("[dbg] sections_raw_len=", len(sections_raw))
-            print(
-                "[dbg] isGroup_count=",
-                sum(1 for s in sections_raw if isinstance(s, dict) and s.get("isGroup")),
-                "leaf_count=",
-                sum(1 for s in sections_raw if isinstance(s, dict) and not s.get("isGroup")),
-            )
-            print("[dbg] sample=", sections_raw[:3])
-
-            if not sections_raw:
-                return ParseResp(
-                    ok=False,
-                    error=f"schema parsing produced 0 sections (schema_name={schema_name})",
-                    raw_text=raw,
-                    sections=[],
+                print(
+                    f"[worker][/parse] ok mode=schema schema_name={schema_name} schema_source={schema_source} "
+                    f"sections={len(sections_raw)} ms={dt}"
                 )
 
-            dt = int((time.time() - t0) * 1000)
-            print(
-                f"[worker][/parse] ok mode=schema schema_name={schema_name} schema_source={schema_source} "
-                f"sections={len(sections_raw)} ms={dt}"
-            )
+                # Store anchor stats for diagnostics
+                anchor_stats = anchor_match
         else:
-            fb = (req.fallback or "headline").strip().lower()
-            if fb not in ("headline", "headlines", "default"):
-                fb = "headline"
-
-            sections_raw = split_resume_by_headlines(raw)
-            if not sections_raw:
-                return ParseResp(
-                    ok=False,
-                    error="fallback parsing produced 0 sections (mode=headline). Consider uploading a schema.",
-                    raw_text=raw,
-                    sections=[],
-                )
-
+            # NO SCHEMA mode: return exactly one UNKNOWN section with full raw text
+            print("[worker][/parse] NO SCHEMA PROVIDED - using fallback_unknown mode")
+            sections_raw = [
+                {
+                    "id": "unknown",
+                    "title": "UNKNOWN",
+                    "text": raw,
+                    "isGroup": False,
+                }
+            ]
             dt = int((time.time() - t0) * 1000)
-            print(
-                f"[worker][/parse] ok mode=fallback fb={fb} sections={len(sections_raw)} ms={dt}"
-            )
+            print(f"[worker][/parse] ok mode=fallback_unknown (no schema) sections=1 ms={dt}")
 
         # Normalize to Section model
         sections: List[Section] = []
@@ -458,20 +680,127 @@ def parse(req: ParseReq):
         dt2 = int((time.time() - t0) * 1000)
         print(f"[worker][/parse] normalized sections={len(sections)} ms={dt2}")
 
-        # ---- NEW: quick warning if only groups returned ----
+        # ---- VALIDATION: Check parse output quality and apply fallback_unknown if needed ----
         g = sum(1 for s in sections if s.isGroup)
         l = sum(1 for s in sections if not s.isGroup)
-        if g > 0 and l == 0:
-            print("[worker][/parse][WARN] normalized result has groups>0 but leaf=0.")
-            print("  This is almost always a schema contract mismatch: leaf sections missing locator fields")
-            print("  (anchor/pattern/start/end/match), wrong parentId field name, or id type mismatch.")
 
-        return ParseResp(ok=True, raw_text=raw, sections=sections)
+        parsing_mode: str
+        fallback_reason: Optional[str] = None
+
+        if schema_obj is not None:
+            # Schema was provided - validate output quality
+            # Rule a) Only groups, no leaf sections
+            if g > 0 and l == 0:
+                parsing_mode = "fallback_unknown"
+                fallback_reason = "Schema produced only group sections with no leaf content"
+                print(f"[worker][/parse][FALLBACK] {fallback_reason}")
+                sections = [
+                    Section(
+                        id="unknown",
+                        title="UNKNOWN",
+                        text=raw,
+                        constraints="",
+                        parentId=None,
+                        isGroup=False,
+                    )
+                ]
+            # Rule b) Leaf sections exist but content quality too low
+            elif l > 0:
+                # Count non-empty leaf sections
+                non_empty_leaves = sum(
+                    1 for s in sections
+                    if not s.isGroup and (s.text or "").strip()
+                )
+                non_empty_ratio = non_empty_leaves / l if l > 0 else 0.0
+
+                # Total extracted leaf text length
+                total_leaf_text_len = sum(
+                    len((s.text or "").strip())
+                    for s in sections
+                    if not s.isGroup
+                )
+
+                # Apply fallback if:
+                # - Less than 30% of leaves have non-empty text OR
+                # - Total extracted text < 200 chars
+                if non_empty_ratio < 0.3:
+                    parsing_mode = "fallback_unknown"
+                    fallback_reason = f"Schema produced {l} leaf sections but only {non_empty_leaves} ({non_empty_ratio:.1%}) have content (threshold: 30%)"
+                    print(f"[worker][/parse][FALLBACK] {fallback_reason}")
+                    sections = [
+                        Section(
+                            id="unknown",
+                            title="UNKNOWN",
+                            text=raw,
+                            constraints="",
+                            parentId=None,
+                            isGroup=False,
+                        )
+                    ]
+                elif total_leaf_text_len < 200:
+                    parsing_mode = "fallback_unknown"
+                    fallback_reason = f"Schema extracted only {total_leaf_text_len} chars from {l} leaf sections (threshold: 200 chars)"
+                    print(f"[worker][/parse][FALLBACK] {fallback_reason}")
+                    sections = [
+                        Section(
+                            id="unknown",
+                            title="UNKNOWN",
+                            text=raw,
+                            constraints="",
+                            parentId=None,
+                            isGroup=False,
+                        )
+                    ]
+                else:
+                    # Valid schema parsing
+                    parsing_mode = "schema"
+            else:
+                # No groups, no leaves (shouldn't happen, but handle it)
+                parsing_mode = "fallback_unknown"
+                fallback_reason = "Schema produced no sections"
+                print(f"[worker][/parse][FALLBACK] {fallback_reason}")
+                sections = [
+                    Section(
+                        id="unknown",
+                        title="UNKNOWN",
+                        text=raw,
+                        constraints="",
+                        parentId=None,
+                        isGroup=False,
+                    )
+                ]
+        else:
+            # No schema provided
+            parsing_mode = "fallback_unknown"
+
+        print(f"[worker][/parse] FINAL parsing_mode={parsing_mode} sections={len(sections)}")
+
+        # Build diagnostics
+        diagnostics = _build_parse_diagnostics(
+            schema_obj=schema_obj,
+            schema_source=schema_source,
+            sections_normalized=sections,
+            mode=parsing_mode,
+            raw_text_len=len(raw),
+            fallback_reason=fallback_reason,
+            anchor_stats=anchor_stats,
+        )
+
+        # Debug log before return
+        print(f"[worker][/parse][RETURN] parsing_mode={parsing_mode} schema_anchor_total={diagnostics.stats.get('schema_anchor_total', 'N/A')} schema_anchor_matched={diagnostics.stats.get('schema_anchor_matched', 'N/A')} sections={len(sections)}")
+
+        return ParseResp(ok=True, raw_text=raw, sections=sections, diagnostics=diagnostics)
 
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
         print(f"[worker][/parse][ERR] ms={dt} err={repr(e)}")
-        return ParseResp(ok=False, error=str(e), raw_text="", sections=[])
+        diag = ParseDiagnostics(
+            warnings=["Unexpected error during parsing"],
+            schema_issues=[],
+            stats={"total_sections": 0, "leaf_sections": 0, "group_sections": 0, "parsing_mode": "error"},
+            summary=f"Parse failed with unexpected error: {str(e)[:100]}",
+        )
+        return ParseResp(ok=False, error=str(e), raw_text="", sections=[], diagnostics=diag)
 
 
 # -----------------------------

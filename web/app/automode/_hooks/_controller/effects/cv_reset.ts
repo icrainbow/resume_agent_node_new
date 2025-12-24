@@ -60,7 +60,7 @@ export function useCvSelectionResetEffect(args: {
         notice: `CV selected: ${st.resumeFile.name}. ${
           st.schemaFile
             ? `Schema attached: ${st.schemaFile.name}. Click "Parse CV" to split by schema.`
-            : `Schema is required. Please upload a schema JSON to enable Parse CV.`
+            : `No schema attached. Click "Parse CV" to parse as single UNKNOWN section (schema optional).`
         }`,
       },
     });

@@ -98,9 +98,22 @@ export type ControllerOpts = {
 };
 
 /** Shared API response shapes */
-export type { DebugEntry, ExportResp, OptimizeApiResp, ParseResp, PdfApiResp, Section };
+export type {
+  DebugEntry,
+  ExportResp,
+  OptimizeApiResp,
+  ParseResp,
+  PdfApiResp,
+  Section,
+};
 
-/** Refs used by actions (to avoid stale closures) */
+/**
+ * Refs used by actions (to avoid stale closures)
+ *
+ * NOTE:
+ * parseTokenRef is used to prevent stale/late parse responses from overwriting
+ * the UI state after the user has selected a new file.
+ */
 export type ControllerRefs = {
   sectionsRef: React.MutableRefObject<Section[]>;
   schemaRawTextRef: React.MutableRefObject<string>;
@@ -108,4 +121,7 @@ export type ControllerRefs = {
   jdBaselineRef: React.MutableRefObject<string>;
   constraintsBaselineRef: React.MutableRefObject<Record<string, string>>;
   wholeCvNotesBaselineRef: React.MutableRefObject<string>;
+
+  // NEW: request guard token for parse
+  parseTokenRef: React.MutableRefObject<string>;
 };

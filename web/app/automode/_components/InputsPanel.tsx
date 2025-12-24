@@ -170,9 +170,9 @@ export default function InputsPanel(props: Props) {
           </div>
         </div>
 
-        {/* Upload CV Schema (REQUIRED) */}
+        {/* Upload CV Schema (OPTIONAL) */}
         <div>
-          <div className="font-semibold">Upload CV Schema (Required)</div>
+          <div className="font-semibold">Upload CV Schema (Optional)</div>
 
           <input
             ref={schemaInputRef}
@@ -198,12 +198,12 @@ export default function InputsPanel(props: Props) {
               className="min-w-0 flex-1 truncate text-xs text-slate-600"
               title={schemaFile ? schemaFile.name : ""}
             >
-              {schemaFile ? schemaFile.name : "Schema required (no file selected)"}
+              {schemaFile ? schemaFile.name : "No schema (will parse as UNKNOWN section)"}
             </span>
           </div>
 
           <div className="mt-2 text-xs text-slate-500">
-            Required. Parse CV is disabled until a valid schema JSON is uploaded.
+            Optional. Without schema, entire document becomes one UNKNOWN section.
           </div>
         </div>
 
@@ -215,9 +215,7 @@ export default function InputsPanel(props: Props) {
           title={
             !resumeFile
               ? "Upload a CV first."
-              : !schemaFile
-                ? "Upload a schema first."
-                : undefined
+              : undefined
           }
         >
           {parseBusy ? "Parsing CV…" : "Parse CV"}

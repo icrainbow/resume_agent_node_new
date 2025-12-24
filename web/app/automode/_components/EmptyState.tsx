@@ -16,15 +16,15 @@ export default function EmptyState({ resumeFile }: Props) {
 
       <div className="max-w-xl">
         <div className="text-lg font-semibold text-slate-800">
-          {resumeFile ? "Upload Schema, then click Parse CV" : "Upload your CV to begin"}
+          {resumeFile ? "Click Parse CV to begin" : "Upload your CV to begin"}
         </div>
 
         <div className="mt-2 text-sm text-slate-600">
           1) Upload a CV (.pdf / .docx).
           <br />
-          2) Upload a Schema (.json) <span className="font-semibold">(required)</span>.
+          2) Upload a Schema (.json) <span className="font-semibold">(optional)</span> for structured parsing.
           <br />
-          3) Click <span className="font-semibold">Parse CV</span> to split into sections (schema-driven).
+          3) Click <span className="font-semibold">Parse CV</span> - with schema: structured sections; without: single UNKNOWN section.
           <br />
           4) Upload a JD to auto-load JD text (editable), then optimize per section or run Whole CV optimization.
         </div>

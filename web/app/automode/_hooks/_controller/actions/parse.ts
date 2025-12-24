@@ -17,6 +17,7 @@ import {
 import { commitSchemaCandidateOrBlock } from "../debug";
 
 export async function parseCvAction(args: {
+
   st: State;
   dispatch: Dispatch;
   setNotice: (s: string) => void;
@@ -28,33 +29,39 @@ export async function parseCvAction(args: {
     args;
 
   if (!st.resumeFile) return setNotice("Please upload a CV first.");
-  if (!st.schemaFile)
-    return setNotice(
-      "Schema is required. Please upload a CV Schema JSON before parsing."
-    );
   if (st.parseBusy) return;
+
+  const hasSchema = !!st.schemaFile;
+  const noticeMsg = hasSchema
+    ? "Parsing CV with schema…"
+    : "Parsing CV (no schema - will create UNKNOWN section)…";
 
   dispatch({
     type: "SET",
-    patch: { parseBusy: true, notice: "Parsing CV with schema…" },
+    patch: { parseBusy: true, notice: noticeMsg },
   });
 
   try {
     const fd = new FormData();
     fd.append("resume", st.resumeFile);
-    fd.append("schema", st.schemaFile);
+    if (st.schemaFile) {
+      fd.append("schema", st.schemaFile);
+    }
 
-    const meta = {
+    const meta: any = {
       fileName: st.resumeFile.name,
       size: st.resumeFile.size,
       type: st.resumeFile.type,
-      mode: "schema",
-      schema: {
+      mode: hasSchema ? "schema" : "noschema",
+    };
+
+    if (hasSchema && st.schemaFile) {
+      meta.schema = {
         name: st.schemaFile.name,
         size: st.schemaFile.size,
         type: st.schemaFile.type,
-      },
-    };
+      };
+    }
 
     const { status, json } = await fetchJsonDebug<ParseResp>(
       "parse-resume",
@@ -135,7 +142,7 @@ export async function parseCvAction(args: {
             debugSchemaNew: null,
             debugReqText: "",
             debugPromptText: "",
-            notice: `CV parsed (schema). sections=${parsed.length}. job_id=${jid}. Please press "Confirm CV Sections" before Generate Preview / Replace All / Export.`,
+            notice: `CV parsed. sections=${parsed.length}. job_id=${jid}. Please press "Confirm CV Sections" before Generate Preview / Replace All / Export.`,
             chatVisible: true,
           },
         });
@@ -185,4 +192,3 @@ export async function parseCvAction(args: {
     dispatch({ type: "SET", patch: { parseBusy: false } });
   }
 }
-

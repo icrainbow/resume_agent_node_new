@@ -525,22 +525,17 @@ if (process.env.NODE_ENV !== "production") {
     console.log("[DEV][PARSE GATE]", {
       resumeFile: !!st.resumeFile,
       schemaFile: !!st.schemaFile,
-      schemaProvidedByUser: st.schemaProvidedByUser,
-      currentSchema: !!st.currentSchema,
       parseBusy: st.parseBusy,
+      parseDisabled_reason: !st.resumeFile ? "no_resume" : st.parseBusy ? "busy" : "enabled",
     });
 
+    // Schema is now OPTIONAL - only require resume file
     return (
       !st.resumeFile ||
-      !st.schemaFile ||
-      !schemaReady ||
       st.parseBusy
     );
   }, [
     st.resumeFile,
-    st.schemaFile,
-    st.schemaProvidedByUser,
-    st.currentSchema,
     st.parseBusy,
   ]);
 

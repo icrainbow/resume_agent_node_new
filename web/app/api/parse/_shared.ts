@@ -102,34 +102,27 @@ export async function parseViaWorkerFromForm(
     }
 
     // -------------------------
-    // Required schema file (STRICT)
+    // Optional schema file
     // Field name (front-end): "schema"
     // -------------------------
     const schemaFile = form.get("schema");
-    if (!schemaFile) {
-      return NextResponse.json(
-        { ok: false, error: "Schema is required. Please upload a .json schema file (field name: schema)." },
-        { status: 400 }
-      );
-    }
-    if (!(schemaFile instanceof File)) {
-      return NextResponse.json(
-        { ok: false, error: "Invalid schema upload (expected a file field named: schema)" },
-        { status: 400 }
-      );
-    }
+    let schemaJson: any = null;
+    let schemaName: string | null = null;
 
-    const schemaName = schemaFile.name || "(no name)";
-    if (!isJsonFileName(schemaName)) {
-      return NextResponse.json(
-        { ok: false, error: `Unsupported file type for schema: ${schemaName}. Please upload a .json file.` },
-        { status: 415 }
-      );
-    }
+    if (schemaFile && schemaFile instanceof File) {
+      schemaName = schemaFile.name || "(no name)";
+      if (!isJsonFileName(schemaName)) {
+        return NextResponse.json(
+          { ok: false, error: `Unsupported file type for schema: ${schemaName}. Please upload a .json file.` },
+          { status: 415 }
+        );
+      }
 
-    const v = await readAndValidateSchemaFile(schemaFile);
-    if (!v.ok) {
-      return NextResponse.json({ ok: false, error: v.error }, { status: 400 });
+      const v = await readAndValidateSchemaFile(schemaFile);
+      if (!v.ok) {
+        return NextResponse.json({ ok: false, error: v.error }, { status: 400 });
+      }
+      schemaJson = v.json;
     }
 
     // -------------------------
@@ -148,17 +141,20 @@ export async function parseViaWorkerFromForm(
       size: buf.length,
       ext,
       filePath,
-      schema: { provided: true, schemaName },
+      schema: { provided: !!schemaJson, schemaName },
     });
 
     // -------------------------
-    // Call worker (INLINE schema)
+    // Call worker (INLINE schema, optional)
     // -------------------------
     const workerPayload: Record<string, any> = {
       file_path: filePath,
-      schema: v.json,                 // ✅ inline schema JSON
-      schema_name: schemaName,        // ✅ for logging/debug on worker
     };
+
+    if (schemaJson) {
+      workerPayload.schema = schemaJson;        // ✅ inline schema JSON (optional)
+      workerPayload.schema_name = schemaName;   // ✅ for logging/debug on worker
+    }
 
     const r = await fetch(`${WORKER_BASE}/parse`, {
       method: "POST",
@@ -185,10 +181,15 @@ export async function parseViaWorkerFromForm(
           ...workerPayload,
           schema: "[omitted]", // avoid noisy logs
         },
+        diagnostics_present: !!data?.diagnostics,
       });
 
       return NextResponse.json(
-        { ok: false, error: data?.error || "Worker parse failed" },
+        {
+          ok: false,
+          error: data?.error || "Worker parse failed",
+          diagnostics: data?.diagnostics || undefined,
+        },
         { status: 500 }
       );
     }
@@ -201,12 +202,15 @@ export async function parseViaWorkerFromForm(
         ? data.sections.map((s: any) => s?.id).filter(Boolean)
         : [],
       raw_text_preview: safePreview(data.raw_text || ""),
+      diagnostics_present: !!data?.diagnostics,
+      diagnostics_parsing_mode: data?.diagnostics?.stats?.parsing_mode || null,
     });
 
     return NextResponse.json({
       ok: true,
       raw_text: data.raw_text || "",
       sections: data.sections || [],
+      diagnostics: data?.diagnostics || undefined,
     });
   } catch (e: any) {
     const ms = Date.now() - t0;

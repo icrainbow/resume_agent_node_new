@@ -1,13 +1,10 @@
 "use client";
 
 import type { Dispatch, State } from "../types";
-import type { ParseResp, Section } from "../../../_types/types";
+import type { ParseResp } from "../../../_types/types";
 import { nowIso } from "../../../_utils/utils";
 import { fetchJsonDebug } from "../../../_utils/fetch";
-import {
-  buildBaselineSchemaFromSections,
-  materializeSectionsFromSchema,
-} from "../../../_utils/schema";
+import { buildBaselineSchemaFromSections } from "../../../_utils/schema";
 import {
   buildConstraintsBaseline,
   buildOpenMaps,
@@ -17,19 +14,34 @@ import {
 import { commitSchemaCandidateOrBlock } from "../debug";
 
 export async function parseCvAction(args: {
-
   st: State;
   dispatch: Dispatch;
   setNotice: (s: string) => void;
   fetchDbg: { debugOn: boolean; pushEntry: (e: any) => void };
   jobIdRef: React.MutableRefObject<string>;
   constraintsBaselineRef: React.MutableRefObject<Record<string, string>>;
+
+  // NEW: prevents stale parse responses from overwriting UI state
+  parseTokenRef: React.MutableRefObject<string>;
 }) {
-  const { st, dispatch, setNotice, fetchDbg, jobIdRef, constraintsBaselineRef } =
-    args;
+  const {
+    st,
+    dispatch,
+    setNotice,
+    fetchDbg,
+    jobIdRef,
+    constraintsBaselineRef,
+    parseTokenRef,
+  } = args;
 
   if (!st.resumeFile) return setNotice("Please upload a CV first.");
   if (st.parseBusy) return;
+
+  // Generate a token for THIS parse request.
+  // Any later file selection will rotate this token (see cv_reset effect),
+  // making this response stale and safely ignored.
+  const token = nowIso();
+  parseTokenRef.current = token;
 
   const hasSchema = !!st.schemaFile;
   const noticeMsg = hasSchema
@@ -38,15 +50,26 @@ export async function parseCvAction(args: {
 
   dispatch({
     type: "SET",
-    patch: { parseBusy: true, notice: noticeMsg },
+    patch: {
+      parseBusy: true,
+      notice: noticeMsg,
+
+      // Clear UI immediately to avoid showing stale sections/errors while parsing.
+      sections: [],
+      openById: {},
+      openGroups: {},
+      cvSectionsConfirmed: false,
+      previewUrl: "",
+      previewDirty: false,
+      exportLinks: null,
+      jobId: "",
+    },
   });
 
   try {
     const fd = new FormData();
     fd.append("resume", st.resumeFile);
-    if (st.schemaFile) {
-      fd.append("schema", st.schemaFile);
-    }
+    if (st.schemaFile) fd.append("schema", st.schemaFile);
 
     const meta: any = {
       fileName: st.resumeFile.name,
@@ -54,7 +77,6 @@ export async function parseCvAction(args: {
       type: st.resumeFile.type,
       mode: hasSchema ? "schema" : "noschema",
     };
-
     if (hasSchema && st.schemaFile) {
       meta.schema = {
         name: st.schemaFile.name,
@@ -71,37 +93,36 @@ export async function parseCvAction(args: {
       fetchDbg
     );
 
+    // If user changed files while request was in-flight, ignore late response.
+    if (parseTokenRef.current !== token) {
+      // eslint-disable-next-line no-console
+      console.warn("[parseCvAction] stale response ignored", {
+        token,
+        active: parseTokenRef.current,
+        status,
+      });
+      return;
+    }
+
     const data: ParseResp = (json || {}) as any;
     if (!data?.ok) {
       const err = data?.error || `Parse failed (HTTP ${status})`;
       const rawLen = (data?.raw_text || "").length;
+
       dispatch({
         type: "SET",
         patch: {
           notice: `${err}. raw_text_len=${rawLen}`,
           jobId: "",
           cvSectionsConfirmed: false,
+          chatVisible: false,
         },
       });
+      jobIdRef.current = "";
       return;
     }
 
-    // -------- 核心解析结果 --------
     const parsed = mapParseRespToSections(data);
-
-    // 🔴 关键 DEBUG：直接把 parsed 打出来
-    console.log(
-      "[DEBUG][parseCvAction] parsed sections =",
-      parsed.map((s) => ({
-        id: s.id,
-        title: s.title,
-        isGroup: s.isGroup,
-        parentId: s.parentId,
-        textLen: s.text?.length,
-        constraints: s.constraints,
-        optimizedText: s.optimizedText,
-      }))
-    );
 
     constraintsBaselineRef.current = buildConstraintsBaseline(parsed, "empty");
     const { openById, openGroups } = buildOpenMaps(parsed);
@@ -120,7 +141,9 @@ export async function parseCvAction(args: {
       candidate: baseSchema,
       source: "parse_baseline",
       onAccepted: (validated) => {
-        // ✅ 用 SET_SECTIONS 写入 sections
+        // Guard again (paranoia): do not write if stale.
+        if (parseTokenRef.current !== token) return;
+
         dispatch({
           type: "SET_SECTIONS",
           sections: parsed,
@@ -148,6 +171,8 @@ export async function parseCvAction(args: {
         });
       },
       onBlocked: () => {
+        if (parseTokenRef.current !== token) return;
+
         dispatch({
           type: "SET_SECTIONS",
           sections: parsed,
@@ -179,16 +204,23 @@ export async function parseCvAction(args: {
 
     if (!ok) return;
   } catch (e: any) {
+    // Only show error if this request is still current.
+    if (parseTokenRef.current !== token) return;
+
     dispatch({
       type: "SET",
       patch: {
         notice: e?.message || "Failed to parse CV.",
         jobId: "",
         cvSectionsConfirmed: false,
+        chatVisible: false,
       },
     });
     jobIdRef.current = "";
   } finally {
-    dispatch({ type: "SET", patch: { parseBusy: false } });
+    // Critical: do NOT blindly set parseBusy=false if a newer parse has started.
+    if (parseTokenRef.current === token) {
+      dispatch({ type: "SET", patch: { parseBusy: false } });
+    }
   }
 }

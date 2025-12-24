@@ -34,7 +34,17 @@ type ArchitectChatProps = {
     next_suggested_action: NextSuggestedAction;
   }) => void;
 
-  // ✅ NEW (optional): for dock presentation
+  // OPTIONAL context
+  context?: {
+    has_resume?: boolean;
+    has_schema?: boolean;
+    has_jd?: boolean;
+    sections_count?: number;
+    cv_sections_confirmed?: boolean;
+    schema_dirty?: boolean;
+  };
+
+  // Dock support
   presentation?: "floating" | "dock";
   dockHeight?: number;
   collapsed?: boolean;
@@ -42,7 +52,7 @@ type ArchitectChatProps = {
   onRequestExpand?: () => void;
 };
 
-const CHAT_API = "/api/architect";
+const CHAT_API = "/api/agent";
 
 function nowIso() {
   return new Date().toISOString();
@@ -59,11 +69,6 @@ function safeStringify(obj: any, space = 2) {
   }
 }
 
-/**
- * Stable outline signature:
- * - Avoid random key order issues by stringifying only a normalized array.
- * - space=0 by default to keep it short.
- */
 function stableOutlineSig(outline: any, space = 0) {
   try {
     if (!Array.isArray(outline)) return "";
@@ -86,12 +91,10 @@ export default function ArchitectChat(props: ArchitectChatProps) {
     cvSectionsConfirmed,
     schemaDirty,
     pendingReq,
-    // keep for rollback; not used in Scheme A UI, but keep the contract stable
+    context,
     onConfirm: _onConfirm,
     onAdjust: _onAdjust,
     onChatUpdate,
-
-    // ✅ NEW (optional)
     presentation = "floating",
     dockHeight,
     collapsed,
@@ -100,7 +103,7 @@ export default function ArchitectChat(props: ArchitectChatProps) {
   } = props;
 
   /* =========================
-     State & refs (hooks MUST always run)
+     State & refs
   ========================= */
 
   const [open, setOpen] = useState<boolean>(true);
@@ -108,9 +111,10 @@ export default function ArchitectChat(props: ArchitectChatProps) {
   const [input, setInput] = useState<string>("");
   const [netError, setNetError] = useState<string>("");
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // ✅ NEW: quick replies from /api/agent (optional)
+  const [quickReplies, setQuickReplies] = useState<string[]>([]);
 
-  // ✅ Hover-intent auto expand for dock (avoid accidental triggers)
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
 
   const clearHoverTimer = () => {
@@ -186,16 +190,12 @@ Never output schema JSON in chat mode.
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-    // ✅ In dock mode, open state is not used; avoid unnecessary effect triggers.
-  }, [messages, visible, netError, collapsed, presentation, dockHeight]);
+  }, [messages, visible, netError, collapsed, presentation, dockHeight, quickReplies]);
 
-  /**
-   * ✅ Welcome seeding:
-   * Show a first assistant message when chat becomes visible.
-   * - No backend call (avoids overwriting backend state)
-   * - StrictMode safe
-   * - Re-seeds per job_id (or outline signature)
-   */
+  /* =========================
+     Welcome seeding
+  ========================= */
+
   const welcomedKeyRef = useRef<string>("");
 
   const welcomeText = useMemo(() => {
@@ -233,8 +233,6 @@ Never output schema JSON in chat mode.
   }, [schemaContext.sections_outline, cvSectionsConfirmed, schemaDirty]);
 
   useEffect(() => {
-    if (!visible) return;
-
     const jobId = String(currentSchema?.job_id || "");
     const outlineSig = stableOutlineSig(schemaContext.sections_outline, 0);
     const seedKey = jobId ? `job:${jobId}` : `outline:${outlineSig}`;
@@ -248,9 +246,7 @@ Never output schema JSON in chat mode.
       const next = [...prev, msg("assistant", welcomeText)];
       return next.slice(-60);
     });
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, currentSchema?.job_id, schemaContext.sections_outline, welcomeText]);
+  }, [currentSchema?.job_id, schemaContext.sections_outline, welcomeText]);
 
   /* =========================
      API
@@ -270,6 +266,175 @@ Never output schema JSON in chat mode.
     }
   }
 
+  // ✅ NEW: helper to pull assistant reply in a backward/forward compatible way
+  function pickAssistantText(json: any): string {
+    const t = (json?.reply ?? json?.assistant_message ?? json?.message ?? "").toString();
+    return t.trim();
+  }
+
+  // ✅ NEW: helper to normalize quick replies
+  function pickQuickReplies(json: any): string[] {
+    const arr = json?.quick_replies;
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((x: any) => typeof x === "string" && x.trim().length > 0);
+  }
+
+  // ✅ NEW: try to find a button by "contains text" (case-insensitive)
+  function findButtonByText(textNeedles: string[]): HTMLButtonElement | null {
+    try {
+      const needles = (textNeedles || [])
+        .map((s) => String(s || "").trim().toLowerCase())
+        .filter(Boolean);
+      if (!needles.length) return null;
+
+      const btns = Array.from(document.querySelectorAll("button")) as HTMLButtonElement[];
+      for (const b of btns) {
+        const t = (b?.innerText || b?.textContent || "").trim().toLowerCase();
+        if (!t) continue;
+        if (needles.some((n) => t.includes(n))) return b;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ✅ NEW: click UI by selector candidates, fallback to button text search
+  function clickUi(selectorCandidates: string[], textNeedles: string[]): boolean {
+    try {
+      for (const sel of selectorCandidates || []) {
+        if (!sel) continue;
+        const el = document.querySelector(sel) as any;
+        if (el && typeof el.click === "function") {
+          el.click();
+          return true;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const b = findButtonByText(textNeedles);
+    if (b && typeof (b as any).click === "function") {
+      try {
+        (b as any).click();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  // ✅ NEW: apply quick reply as a UI action (best-effort). Returns true if handled.
+function applyQuickReplyAction(label: string): boolean {
+  const raw = (label || "").trim();
+  if (!raw) return false;
+
+  const t = raw.toLowerCase();
+
+  /**
+   * 🚨 HARD SAFETY GUARD
+   * If schema is dirty, NEVER allow optimize.
+   * Force user back to "Confirm Sections" instead.
+   *
+   * This is a frontend safety net in case agent logic or quick replies misfire.
+   */
+  if (
+    schemaDirty &&
+    (t.includes("optimize") || t.includes("one-click"))
+  ) {
+    return clickUi(
+      [
+        "[data-testid='btn-confirm-sections']",
+        "[data-testid='confirm-sections']",
+        "[data-action='confirm-sections']",
+      ],
+      ["confirm cv sections", "confirm sections", "confirm"]
+    );
+  }
+
+  // Manual mode routing (best-effort)
+  if (t.includes("manual")) {
+    try {
+      window.location.href = "/manualmode";
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Adjust structure
+  if (t.includes("adjust") && t.includes("structure")) {
+    return clickUi(
+      [
+        "[data-testid='btn-adjust-structure']",
+        "[data-testid='adjust-structure']",
+        "[data-action='adjust-structure']",
+      ],
+      ["adjust structure", "adjust"]
+    );
+  }
+
+  // Parse CV
+  if (t.includes("parse")) {
+    return clickUi(
+      [
+        "[data-testid='btn-parse-cv']",
+        "[data-testid='parse-cv']",
+        "[data-action='parse-cv']",
+      ],
+      ["parse cv", "parse resume", "parse"]
+    );
+  }
+
+  // Confirm sections
+  if (t.includes("confirm")) {
+    return clickUi(
+      [
+        "[data-testid='btn-confirm-sections']",
+        "[data-testid='confirm-sections']",
+        "[data-action='confirm-sections']",
+      ],
+      ["confirm cv sections", "confirm sections", "confirm"]
+    );
+  }
+
+  // Optimize whole (only reachable when schemaDirty === false)
+  if (t.includes("optimize") || t.includes("one-click")) {
+    return clickUi(
+      [
+        "[data-testid='btn-optimize-whole']",
+        "[data-testid='optimize-whole']",
+        "[data-action='optimize-whole']",
+      ],
+      ["one-click optimize", "optimize whole", "optimize"]
+    );
+  }
+
+  return false;
+}
+
+  // ✅ NEW: centralized quick reply click handler (UI action first, fallback to send text)
+  const handleQuickReplyClick = async (q: string) => {
+    if (busy) return;
+
+    const handled = applyQuickReplyAction(q);
+
+    if (handled) {
+      // keep minimal: optionally log the action into chat as an assistant hint
+      setMessages((prev): ChatMsg[] => {
+        const next = [...prev, msg("assistant", `OK — triggering: ${q}`)];
+        return next.slice(-60);
+      });
+      return;
+    }
+
+    // fallback: treat as user text
+    await send(q);
+  };
+
   async function callChatApi(userText: string, historySnapshot: ChatMsg[]) {
     const text = (userText ?? "").trim();
     if (!text) return;
@@ -281,10 +446,47 @@ Never output schema JSON in chat mode.
     const convo = (historySnapshot || []).filter((m) => m.role !== "system");
     const pendingReqStr = normalizePendingReq(pendingReq);
 
+    const agentContext = {
+      ...(context || {}),
+      has_schema:
+        typeof context?.has_schema === "boolean" ? context.has_schema : !!currentSchema,
+      sections_count:
+        typeof context?.sections_count === "number"
+          ? context.sections_count
+          : Array.isArray(currentSchema?.sections)
+          ? currentSchema.sections.length
+          : 0,
+      cv_sections_confirmed:
+        typeof context?.cv_sections_confirmed === "boolean"
+          ? context.cv_sections_confirmed
+          : !!cvSectionsConfirmed,
+      schema_dirty:
+        typeof context?.schema_dirty === "boolean" ? context.schema_dirty : !!schemaDirty,
+    };
+
+    const agentMessages: ChatMsg[] = [
+      msg("system", systemPrompt),
+      msg(
+        "system",
+        `Context:\n${safeStringify(
+          {
+            ...schemaContext,
+            schema_dirty: !!schemaDirty,
+            pending_requirements_len: pendingReqStr.length,
+            cv_sections_confirmed: !!cvSectionsConfirmed,
+          },
+          2
+        )}`
+      ),
+      ...convo,
+      msg("user", text),
+    ];
+
     const payload = {
+      messages: agentMessages,
+      context: agentContext,
       action: "chat" as const,
       ts: nowIso(),
-
       current: {
         job_id: currentSchema?.job_id ?? "",
         jd_text: currentSchema?.jd_text ?? "",
@@ -292,42 +494,11 @@ Never output schema JSON in chat mode.
           ? currentSchema.sections
           : [],
       },
-
       state: {
         pending_requirements: pendingReqStr,
         schema_dirty: !!schemaDirty,
       },
-
-      messages: [
-        { role: "system" as const, content: systemPrompt },
-        {
-          role: "system" as const,
-          content: `Context:\n${safeStringify(
-            {
-              ...schemaContext,
-              schema_dirty: !!schemaDirty,
-              pending_requirements_len: pendingReqStr.length,
-              cv_sections_confirmed: !!cvSectionsConfirmed,
-            },
-            2
-          )}`,
-        },
-        ...convo,
-        { role: "user" as const, content: text },
-      ],
     };
-
-    // eslint-disable-next-line no-console
-    console.log("[ArchitectChat] POST /api/architect", {
-      job_id: payload.current.job_id,
-      sections: Array.isArray(payload.current.sections)
-        ? payload.current.sections.length
-        : 0,
-      pending_requirements_len: (payload.state.pending_requirements || "")
-        .length,
-      schema_dirty: payload.state.schema_dirty,
-      cv_sections_confirmed: !!cvSectionsConfirmed,
-    });
 
     try {
       const r = await fetch(CHAT_API, {
@@ -348,14 +519,13 @@ Never output schema JSON in chat mode.
         const msg = (json?.error || json?.message || raw || `HTTP ${r.status}`)
           .toString();
         setNetError(msg);
+        setQuickReplies([]); // ✅ NEW: clear on error
         setMessages((prev) => {
           const next = [
             ...prev,
             {
               role: "assistant" as const,
-              content:
-                "Architect service returned an error. Please check Debug Panel → Recent Requests for /api/architect.\n" +
-                `Error: ${msg}`,
+              content: "Agent service returned an error.\n" + `Error: ${msg}`,
             },
           ];
           return next.slice(-60);
@@ -363,8 +533,8 @@ Never output schema JSON in chat mode.
         return;
       }
 
-      const assistantText = (json?.assistant_message || json?.message || "")
-        .toString();
+      // ✅ NEW: reply fallback logic
+      const assistantText = pickAssistantText(json);
       if (assistantText) {
         setMessages((prev): ChatMsg[] => {
           const next = [...prev, msg("assistant", assistantText)];
@@ -372,7 +542,9 @@ Never output schema JSON in chat mode.
         });
       }
 
-      // ---- robust field mapping (backend variations safe) ----
+      // ✅ NEW: quick replies rendering
+      setQuickReplies(pickQuickReplies(json));
+
       const pr =
         json?.pending_requirements ??
         json?.pendingReq ??
@@ -399,14 +571,13 @@ Never output schema JSON in chat mode.
     } catch (e: any) {
       const msg = (e?.message || String(e)).toString();
       setNetError(msg);
+      setQuickReplies([]); // ✅ NEW: clear on exception
       setMessages((prev) => {
         const next = [
           ...prev,
           {
             role: "assistant" as const,
-            content:
-              "Architect service is unreachable. Please check your /api/architect route and backend worker.\n" +
-              `Error: ${msg}`,
+            content: "Agent service is unreachable.\n" + `Error: ${msg}`,
           },
         ];
         return next.slice(-60);
@@ -416,21 +587,15 @@ Never output schema JSON in chat mode.
     }
   }
 
-  const send = async () => {
-    const trimmed = (input ?? "").trim();
+  const send = async (overrideText?: string) => {
+    const trimmed = ((overrideText ?? input) ?? "").trim();
     if (!trimmed || busy) return;
 
-    // history snapshot BEFORE state update
     const historySnapshot = messages;
 
-    console.log("[ArchitectChat] send()", {
-      input: trimmed,
-      pendingReq_before: pendingReq,
-      schemaDirty_before: schemaDirty,
-      job_id: currentSchema?.job_id,
-    });
+    // only clear textbox when it was from textbox
+    if (typeof overrideText === "undefined") setInput("");
 
-    setInput("");
     setMessages((prev): ChatMsg[] => {
       const next = [...prev, msg("user", trimmed)];
       return next.slice(-60);
@@ -438,21 +603,15 @@ Never output schema JSON in chat mode.
 
     await callChatApi(trimmed, historySnapshot);
 
-    // ✅ AUTO-COLLAPSE after user command (dock mode only)
     if (presentation === "dock" && !collapsed) {
       onToggleCollapse?.();
     }
   };
 
   /* =========================
-     Render (JSX-level gating ONLY)
+     Render (NO visible gate)
   ========================= */
 
-  if (!visible) {
-    return null; // safe: AFTER all hooks
-  }
-
-  // ✅ Dock mode: the parent (page.tsx) already provides the dock chrome.
   if (presentation === "dock") {
     const nonSystem = messages.filter((m) => m.role !== "system");
     const lastAssistant = [...nonSystem]
@@ -460,10 +619,7 @@ Never output schema JSON in chat mode.
       .find((m) => m.role === "assistant");
     const lastUser = [...nonSystem].reverse().find((m) => m.role === "user");
 
-    // 1–2 line summary: prefer assistant last; fallback to user last
     const summaryText = (lastAssistant?.content || lastUser?.content || "").trim();
-
-    // show compact summary lines (2–4 lines)
     const summaryLines = summaryText
       ? summaryText.split("\n").slice(0, 4).join("\n")
       : "Tell me how to split / adjust the sections…";
@@ -487,7 +643,6 @@ Never output schema JSON in chat mode.
 
     return (
       <div className="w-full">
-        {/* Body */}
         {!isCollapsed ? (
           <div className="px-4 py-3">
             {netError ? (
@@ -511,6 +666,24 @@ Never output schema JSON in chat mode.
                   </div>
                 ))}
             </div>
+
+            {/* ✅ NEW: quick replies (dock expanded) */}
+            {quickReplies.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {quickReplies.map((q, i) => (
+                  <button
+                    key={`${q}-${i}`}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleQuickReplyClick(q)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
+                    title={q}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div
@@ -532,17 +705,36 @@ Never output schema JSON in chat mode.
                 {summaryLines}
               </div>
 
-              {/* ✅ ultra-light hint */}
               <div className="shrink-0 pt-0.5">
                 <div className="rounded-lg bg-white/70 px-2 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
                   Hover to expand ↑
                 </div>
               </div>
             </div>
+
+            {/* ✅ NEW: quick replies (dock collapsed) */}
+            {quickReplies.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {quickReplies.slice(0, 3).map((q, i) => (
+                  <button
+                    key={`${q}-${i}`}
+                    type="button"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleQuickReplyClick(q);
+                    }}
+                    className={`rounded-lg px-3 py-1 text-[11px] font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
+                    title={q}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         )}
 
-        {/* Input row (always visible) */}
         <div className="border-t px-4 py-3 bg-white">
           <div className="flex gap-2">
             <input
@@ -561,7 +753,7 @@ Never output schema JSON in chat mode.
             />
             <button
               type="button"
-              onClick={send}
+              onClick={() => send()}
               disabled={busy}
               className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
               title={busy ? "Working…" : "Send"}
@@ -570,7 +762,6 @@ Never output schema JSON in chat mode.
             </button>
           </div>
 
-          {/* Optional: if you still want a collapse toggle inside body (not required, page.tsx already has it) */}
           {onToggleCollapse ? (
             <div className="mt-2 text-right">
               <button
@@ -587,11 +778,10 @@ Never output schema JSON in chat mode.
     );
   }
 
-  // ✅ Existing floating mode (unchanged)
+  // floating mode (unchanged)
   return (
     <div className="fixed bottom-4 right-4 z-50 w-[420px] max-w-[calc(100vw-2rem)]">
       <div className="rounded-2xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-200">
-        {/* Header */}
         <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2">
             <div className="text-sm font-semibold">Architect Chat</div>
@@ -645,6 +835,24 @@ Never output schema JSON in chat mode.
                     </div>
                   </div>
                 ))}
+
+              {/* ✅ NEW: quick replies (floating) */}
+              {quickReplies.length > 0 ? (
+                <div className="pt-2 flex flex-wrap gap-2">
+                  {quickReplies.map((q, i) => (
+                    <button
+                      key={`${q}-${i}`}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleQuickReplyClick(q)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
+                      title={q}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div className="border-t px-4 py-3">
@@ -664,7 +872,7 @@ Never output schema JSON in chat mode.
                 />
                 <button
                   type="button"
-                  onClick={send}
+                  onClick={() => send()}
                   disabled={busy}
                   className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 >

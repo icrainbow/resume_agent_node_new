@@ -1,0 +1,355 @@
+// web/app/api/agent/route.ts
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+
+type ChatMsg = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+type AgentContext = {
+  has_resume?: boolean;
+  has_schema?: boolean;
+  has_jd?: boolean;
+  sections_count?: number;
+  cv_sections_confirmed?: boolean;
+  schema_dirty?: boolean;
+
+  /**
+   * ✅ NEW (optional): allow the client to explicitly request proxy to /api/architect.
+   * This keeps changes minimal and avoids “surprising” routing decisions.
+   */
+  proxy_to_architect?: boolean;
+
+  /**
+   * ✅ NEW (optional): pass-through hint for future routing (not used now).
+   * e.g. "architect" | "rule" | "auto"
+   */
+  route_hint?: "architect" | "rule" | "auto";
+};
+
+type AgentInput = {
+  messages?: ChatMsg[];
+  context?: AgentContext;
+
+  /**
+   * ✅ NEW (optional): passthrough payload for /api/architect if you want.
+   * If absent, we forward the entire body as-is.
+   */
+  architect_payload?: any;
+};
+
+type NextSuggestedAction =
+  | {
+      kind: "cta";
+      id:
+        | "upload_resume"
+        | "parse_cv"
+        | "confirm_sections"
+        | "optimize_whole"
+        | "switch_to_manual";
+      label: string;
+      payload?: Record<string, any>;
+    }
+  | { kind: "none" };
+
+function pickNextSuggestedAction(
+  ctx: AgentContext | undefined
+): NextSuggestedAction {
+  const hasResume = !!ctx?.has_resume;
+  const hasJd = !!ctx?.has_jd;
+  const sections = Number(ctx?.sections_count || 0);
+  const confirmed = !!ctx?.cv_sections_confirmed;
+
+  if (!hasResume) {
+    return {
+      kind: "cta",
+      id: "upload_resume",
+      label: "Upload your resume to begin",
+    };
+  }
+  if (sections === 0) {
+    return {
+      kind: "cta",
+      id: "parse_cv",
+      label: "Parse resume into sections",
+    };
+  }
+  if (!confirmed) {
+    return {
+      kind: "cta",
+      id: "confirm_sections",
+      label: "Confirm parsed sections",
+    };
+  }
+  if (!!ctx?.schema_dirty) {
+    return {
+      kind: "cta",
+      id: "confirm_sections",
+      label: "Confirm updated section structure",
+    };
+  }
+  if (hasJd) {
+    return {
+      kind: "cta",
+      id: "optimize_whole",
+      label: "One-click optimize against JD",
+    };
+  }
+  return { kind: "none" };
+}
+
+function buildAssistantMessage(ctx: AgentContext | undefined): string {
+  const hasResume = !!ctx?.has_resume;
+  const hasSchema = !!ctx?.has_schema;
+  const hasJd = !!ctx?.has_jd;
+  const sections = Number(ctx?.sections_count || 0);
+  const confirmed = !!ctx?.cv_sections_confirmed;
+  const schemaDirty = !!ctx?.schema_dirty;
+
+  if (!hasResume) {
+    return [
+      "I can help you either:",
+      "- build a resume from scratch via chat, or",
+      "- optimize an existing resume.",
+      "",
+      "For this MVP, please upload your resume first. Then I will parse it into sections and guide you through confirmation and optimization.",
+    ].join("\n");
+  }
+
+  if (hasResume && sections === 0) {
+    return [
+      "Resume detected.",
+      "Next step: parse it into structured sections so we can optimize safely and transparently.",
+      hasSchema
+        ? "Note: a schema file is present; I will validate it during parsing."
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (sections > 0 && !confirmed) {
+    return [
+      `I extracted ${sections} sections.`,
+      "Please review and confirm section boundaries/titles.",
+      "If the structure looks wrong, switch to Manual Mode to select sections by highlighting.",
+    ].join("\n");
+  }
+
+  // ✅ NEW: if schema is dirty, always guide user back to re-confirm structure first
+  if (confirmed && schemaDirty) {
+    return [
+      "A structure draft is in progress (schema_dirty=true).",
+      "Please re-confirm the updated section structure before optimizing.",
+      "If you want to refine the structure further, describe the changes and use “Adjust structure”.",
+    ].join("\n");
+  }
+
+  if (confirmed && hasJd) {
+    return [
+      "Sections are confirmed and a JD is available.",
+      "I can run one-click optimization section-by-section. You can still edit constraints per section before running.",
+    ].join("\n");
+  }
+
+  if (confirmed && !hasJd) {
+    return [
+      "Sections are confirmed.",
+      "Upload a JD or paste JD text to enable targeted optimization (best results).",
+    ].join("\n");
+  }
+
+  return "Tell me what you want to do next (optimize, restructure, or start from scratch).";
+}
+
+function buildUiHints(ctx: AgentContext | undefined): {
+  reply: string;
+  quick_replies: string[];
+  ui_action: string | null;
+} {
+  const hasResume = !!ctx?.has_resume;
+  const hasJd = !!ctx?.has_jd;
+  const hasSchema = !!ctx?.has_schema;
+  const schemaDirty = !!ctx?.schema_dirty;
+  const sections = Number(ctx?.sections_count || 0);
+  const confirmed = !!ctx?.cv_sections_confirmed;
+
+  // Default safe set
+  const hints = {
+    reply:
+      buildAssistantMessage(ctx) +
+      (schemaDirty
+        ? "\n\nNote: a structure draft is in progress (schema_dirty=true)."
+        : ""),
+    quick_replies: [] as string[],
+    ui_action: null as string | null,
+  };
+
+  if (!hasResume) {
+    hints.quick_replies = [
+      "I have a resume (will upload)",
+      "Build from scratch via chat",
+    ];
+    hints.ui_action = null;
+    return hints;
+  }
+
+  if (sections === 0) {
+    hints.quick_replies = [
+      hasSchema ? "Parse CV (validate schema)" : "Parse CV now",
+      "Switch to Manual Mode",
+    ];
+    // UI action is only a hint; your UI may ignore it for now
+    hints.ui_action = "start_parse";
+    return hints;
+  }
+
+  if (!confirmed) {
+    hints.quick_replies = [
+      "Confirm sections",
+      "Adjust structure",
+      "Switch to Manual Mode",
+      "Show diagnostics",
+    ];
+    hints.ui_action = "open_tools";
+    return hints;
+  }
+
+  // ✅ NEW: if schema is dirty, do NOT offer optimize; force reconfirm path
+  if (confirmed && schemaDirty) {
+    hints.quick_replies = [
+      "Confirm sections",
+      "Adjust structure",
+      "Switch to Manual Mode",
+      "Show diagnostics",
+    ];
+    hints.ui_action = "open_tools";
+    return hints;
+  }
+
+  if (confirmed && hasJd) {
+    hints.quick_replies = [
+      "One-click optimize",
+      "Adjust structure",
+    ];
+    hints.ui_action = "open_tools";
+    return hints;
+  }
+
+
+  if (confirmed && !hasJd) {
+    hints.quick_replies = [
+      "Upload JD",
+      "Optimize baseline (no JD)",
+      "Adjust structure",
+      "Show constraints",
+    ];
+    hints.ui_action = "open_tools";
+    return hints;
+  }
+
+  // fallback safe
+  hints.quick_replies = ["Show options", "Switch to Manual Mode"];
+  hints.ui_action = "open_tools";
+  return hints;
+}
+
+/**
+ * ✅ NEW: Proxy to existing /api/architect route (minimal, transparent).
+ * - We mirror status + content-type
+ * - We do not assume JSON (architect may return text error)
+ */
+async function proxyToArchitect(req: Request, body: AgentInput) {
+  const origin = new URL(req.url).origin;
+
+  // Prefer explicit architect_payload if provided; otherwise forward original body.
+  const payloadToSend =
+    typeof body?.architect_payload !== "undefined"
+      ? body.architect_payload
+      : body;
+
+  const r = await fetch(`${origin}/api/architect`, {
+    method: "POST",
+    headers: {
+      "Content-Type": req.headers.get("content-type") || "application/json",
+    },
+    body: JSON.stringify(payloadToSend),
+    cache: "no-store",
+  });
+
+  const text = await r.text();
+
+  return new NextResponse(text, {
+    status: r.status,
+    headers: {
+      "Content-Type": r.headers.get("content-type") || "application/json",
+    },
+  });
+}
+
+export async function POST(req: Request) {
+  let body: AgentInput | null = null;
+
+  try {
+    body = (await req.json()) as AgentInput;
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Invalid JSON body." },
+      { status: 400 }
+    );
+  }
+
+  const ctx = body?.context ?? {};
+
+  /**
+   * ✅ Routing rule (MINIMAL / NON-SURPRISING):
+   * - Only proxy when client explicitly asks: context.proxy_to_architect === true
+   * - Keeps your current MVP behavior stable by default.
+   *
+   * You can later change this to:
+   * - route_hint === "architect"
+   * - or "auto" heuristics (e.g., if user asks to restructure)
+   */
+  if (ctx?.proxy_to_architect === true || ctx?.route_hint === "architect") {
+    try {
+      return await proxyToArchitect(req, body);
+    } catch (e: any) {
+      const msg = (e?.message || String(e)).toString();
+      return NextResponse.json(
+        { ok: false, error: `Proxy to /api/architect failed: ${msg}` },
+        { status: 502 }
+      );
+    }
+  }
+
+  // ---- Default: your existing rule-based (non-LLM) MVP agent ----
+  const assistant_message = buildAssistantMessage(ctx);
+  const next_suggested_action = pickNextSuggestedAction(ctx);
+
+  // ✅ Add non-breaking UI hint fields (client may ignore for now)
+  const ui = buildUiHints(ctx);
+
+  return NextResponse.json({
+    ok: true,
+
+    // backward-compatible fields consumed by current ArchitectChat
+    assistant_message,
+    pending_requirements: null,
+    schema_dirty: !!ctx?.schema_dirty,
+    next_suggested_action,
+
+    // forward-compatible fields (safe to ignore)
+    reply: ui.reply,
+    quick_replies: ui.quick_replies,
+    ui_action: ui.ui_action,
+  });
+}
+
+export async function GET() {
+  return NextResponse.json(
+    { ok: false, error: "Use POST /api/agent" },
+    { status: 405 }
+  );
+}

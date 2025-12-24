@@ -2,23 +2,33 @@
 "use client";
 
 import { useEffect } from "react";
-
 import type { Dispatch, State } from "../types";
+import { nowIso } from "../../../_utils/utils";
 
 export function useCvSelectionResetEffect(args: {
   st: State;
   dispatch: Dispatch;
   constraintsBaselineRef: React.MutableRefObject<Record<string, string>>;
   defaultNotice: string;
+
+  // NEW: invalidate in-flight parse when user changes resume/schema
+  parseTokenRef: React.MutableRefObject<string>;
 }) {
-  const { st, dispatch, constraintsBaselineRef, defaultNotice } = args;
+  const { st, dispatch, constraintsBaselineRef, defaultNotice, parseTokenRef } =
+    args;
 
   useEffect(() => {
+    // Rotate token on ANY resume/schema change to invalidate previous parse responses
+    parseTokenRef.current = nowIso();
+
     if (!st.resumeFile) {
       constraintsBaselineRef.current = {};
       dispatch({
         type: "SET",
         patch: {
+          // cancel/clear parse UI
+          parseBusy: false,
+
           sections: [],
           previewUrl: "",
           exportLinks: null,
@@ -47,6 +57,9 @@ export function useCvSelectionResetEffect(args: {
     dispatch({
       type: "SET",
       patch: {
+        // cancel/clear parse UI
+        parseBusy: false,
+
         sections: [],
         previewUrl: "",
         exportLinks: null,

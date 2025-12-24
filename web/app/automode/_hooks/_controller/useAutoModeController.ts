@@ -5,13 +5,10 @@ import { useEffect, useMemo, useReducer, useRef } from "react";
 
 import type {
   DebugEntry,
-  ExportResp,
-  PdfApiResp,
   Section,
 } from "../../_types/types";
-import { isValidSchema } from "../../_utils/utils";
+import { nowIso } from "../../_utils/utils";
 import { buildBaselineSchemaFromSections } from "../../_utils/schema";
-import { fetchJsonDebug } from "../../_utils/fetch";
 
 import type { ControllerOpts, ControllerRefs, State } from "./types";
 import { reducer, DEFAULT_NOTICE } from "./reducer";
@@ -104,7 +101,7 @@ export function useAutoModeController(opts: ControllerOpts) {
     return init;
   });
 
-    // ✅ Always-latest state ref (to avoid stale closure in async flows)
+  // ✅ Always-latest state ref (to avoid stale closure in async flows)
   const stRef = useRef<State>(st);
   useEffect(() => {
     stRef.current = st;
@@ -131,6 +128,9 @@ export function useAutoModeController(opts: ControllerOpts) {
   const constraintsBaselineRef = useRef<Record<string, string>>({});
   const wholeCvNotesBaselineRef = useRef<string>(DEFAULT_WHOLE_CV_NOTES);
 
+  // ✅ NEW: parse token guard to prevent stale parse responses overwriting UI
+  const parseTokenRef = useRef<string>(nowIso());
+
   // Typed bundle (optional, useful if you later move action fns out of this file)
   const _refs: ControllerRefs = {
     sectionsRef,
@@ -139,6 +139,7 @@ export function useAutoModeController(opts: ControllerOpts) {
     jdBaselineRef,
     constraintsBaselineRef,
     wholeCvNotesBaselineRef,
+    parseTokenRef,
   };
 
   /** --------- debug adapter ---------- */
@@ -158,120 +159,127 @@ export function useAutoModeController(opts: ControllerOpts) {
   const setNotice = (notice: string) => gates.setNotice(dispatch, notice);
 
   // Step C: schema commit = validate only (fail-closed), never auto-fix
-const commitSchemaCandidateOrBlock = (args: {
-  candidate: any;
-  source:
-    | "user_upload"
-    | "parse_baseline"
-    | "adjust_structure"
-    | "chat"
-    | "unknown";
-  onAccepted?: (validated: any) => void;
-  onBlocked?: (validation: any) => void;
-}) => {
-  const { candidate, source, onAccepted, onBlocked } = args;
+  const commitSchemaCandidateOrBlock = (args: {
+    candidate: any;
+    source:
+      | "user_upload"
+      | "parse_baseline"
+      | "adjust_structure"
+      | "chat"
+      | "unknown";
+    onAccepted?: (validated: any) => void;
+    onBlocked?: (validation: any) => void;
+  }) => {
+    const { candidate, source, onAccepted, onBlocked } = args;
 
-  const wrapped = {
-    ...args,
+    const wrapped = {
+      ...args,
 
-    onAccepted: (validated: any) => {
-      console.log("[DEV][SCHEMA COMMIT][ACCEPTED]", {
-        source,
-        hasGroups: Array.isArray(validated?.groups),
-        groups: validated?.groups?.length,
-        sections: validated?.sections?.length,
-      });
-if (process.env.NODE_ENV !== "production") {
-  const v = validated ?? candidate; // 看你代码里哪个是最终schema
-  const groups = Array.isArray((v as any)?.groups) ? (v as any).groups : [];
-  const sections = Array.isArray((v as any)?.sections) ? (v as any).sections : [];
+      onAccepted: (validated: any) => {
+        console.log("[DEV][SCHEMA COMMIT][ACCEPTED]", {
+          source,
+          hasGroups: Array.isArray(validated?.groups),
+          groups: validated?.groups?.length,
+          sections: validated?.sections?.length,
+        });
 
-  console.groupCollapsed("[DEBUG][SCHEMA] validated schema detail");
-  console.log("groups.length =", groups.length);
-  console.log("sections.length =", sections.length);
+        if (process.env.NODE_ENV !== "production") {
+          const v = validated ?? candidate;
+          const groups = Array.isArray((v as any)?.groups)
+            ? (v as any).groups
+            : [];
+          const sections = Array.isArray((v as any)?.sections)
+            ? (v as any).sections
+            : [];
 
-  // 1) 打印 groups 关键字段 + 类型
-  console.table(
-    groups.map((g: any, i: number) => ({
-      i,
-      id: g?.id,
-      idType: typeof g?.id,
-      title: g?.title,
-      anchor: g?.anchor,
-      anchorType: typeof g?.anchor,
-    }))
-  );
+          console.groupCollapsed("[DEBUG][SCHEMA] validated schema detail");
+          console.log("groups.length =", groups.length);
+          console.log("sections.length =", sections.length);
 
-  // 2) 打印 leaf sections 关键字段 + 类型 + 可能的契约字段
-  console.table(
-    sections.map((s: any, i: number) => ({
-      i,
-      id: s?.id,
-      idType: typeof s?.id,
-      title: s?.title,
-      parentId: s?.parentId ?? s?.parent_id ?? null,
-      parentIdType: typeof (s?.parentId ?? s?.parent_id),
-      isGroup: s?.isGroup,
-      isGroupType: typeof s?.isGroup,
-      anchor: s?.anchor,
-      start: s?.start,
-      end: s?.end,
-      match: s?.match,
-      pattern: s?.pattern,
-    }))
-  );
+          // 1) groups key fields + types
+          console.table(
+            groups.map((g: any, i: number) => ({
+              i,
+              id: g?.id,
+              idType: typeof g?.id,
+              title: g?.title,
+              anchor: g?.anchor,
+              anchorType: typeof g?.anchor,
+            }))
+          );
 
-  // 3) 缺失字段统计（用于快速对齐后端契约）
-  const missing = {
-    parentId: 0,
-    isGroup: 0,
-    anchorOrPatternOrMatch: 0,
+          // 2) leaf sections key fields + types + possible contract fields
+          console.table(
+            sections.map((s: any, i: number) => ({
+              i,
+              id: s?.id,
+              idType: typeof s?.id,
+              title: s?.title,
+              parentId: s?.parentId ?? s?.parent_id ?? null,
+              parentIdType: typeof (s?.parentId ?? s?.parent_id),
+              isGroup: s?.isGroup,
+              isGroupType: typeof s?.isGroup,
+              anchor: s?.anchor,
+              start: s?.start,
+              end: s?.end,
+              match: s?.match,
+              pattern: s?.pattern,
+            }))
+          );
+
+          // 3) missing field stats (align backend contract quickly)
+          const missing = {
+            parentId: 0,
+            isGroup: 0,
+            anchorOrPatternOrMatch: 0,
+          };
+
+          for (const s of sections) {
+            const pid = s?.parentId ?? s?.parent_id ?? null;
+            if (!pid) missing.parentId++;
+            if (typeof s?.isGroup !== "boolean") missing.isGroup++;
+
+            const hasLocator =
+              !!s?.anchor ||
+              !!s?.pattern ||
+              !!s?.match ||
+              (s?.start != null && s?.end != null);
+            if (!hasLocator) missing.anchorOrPatternOrMatch++;
+          }
+
+          console.log("[DEBUG][SCHEMA] missing summary:", missing);
+          console.groupEnd();
+        }
+
+        if (onAccepted) onAccepted(validated);
+      },
+
+      onBlocked: (validation: any) => {
+        try {
+          console.error(
+            "[DEV][SCHEMA COMMIT][BLOCKED JSON]",
+            JSON.stringify(validation, null, 2)
+          );
+        } catch (e) {
+          console.error("[DEV][SCHEMA COMMIT][BLOCKED RAW]", validation);
+        }
+
+        if (onBlocked) onBlocked(validation);
+      },
+    };
+
+    const ok = dbg.commitSchemaCandidateOrBlock({
+      st,
+      dispatch,
+      candidate: wrapped.candidate,
+      source: wrapped.source,
+      onAccepted: wrapped.onAccepted,
+      onBlocked: wrapped.onBlocked,
+    });
+
+    console.log("[DEV][SCHEMA COMMIT][RETURNED]", ok, { source });
+    return ok;
   };
-
-  for (const s of sections) {
-    const pid = s?.parentId ?? s?.parent_id ?? null;
-    if (!pid) missing.parentId++;
-    if (typeof s?.isGroup !== "boolean") missing.isGroup++;
-
-    const hasLocator =
-      !!s?.anchor || !!s?.pattern || !!s?.match || (s?.start != null && s?.end != null);
-    if (!hasLocator) missing.anchorOrPatternOrMatch++;
-  }
-
-  console.log("[DEBUG][SCHEMA] missing summary:", missing);
-  console.groupEnd();
-}
-
-      if (onAccepted) onAccepted(validated);
-    },
-
-    onBlocked: (validation: any) => {
-      // 🔴 关键：强制打印可读 JSON
-      try {
-        console.error(
-          "[DEV][SCHEMA COMMIT][BLOCKED JSON]",
-          JSON.stringify(validation, null, 2)
-        );
-      } catch (e) {
-        console.error("[DEV][SCHEMA COMMIT][BLOCKED RAW]", validation);
-      }
-
-      if (onBlocked) onBlocked(validation);
-    },
-  };
-
-  const ok = dbg.commitSchemaCandidateOrBlock({
-    st,
-    dispatch,
-    candidate: wrapped.candidate,
-    source: wrapped.source,
-    onAccepted: wrapped.onAccepted,
-    onBlocked: wrapped.onBlocked,
-  });
-
-  console.log("[DEV][SCHEMA COMMIT][RETURNED]", ok, { source });
-  return ok;
-};
 
   /** --------- gates ---------- */
   const requireJdText = () => gates.requireJdText(st, dispatch);
@@ -282,14 +290,14 @@ if (process.env.NODE_ENV !== "production") {
   /** =========================
    * Schema loader
    * ========================= */
- const loadUserSchemaFile = async (file: File | null) => {
-  return loadUserSchemaFileAction({
-    file,
-    st,
-    dispatch,
-    commitSchemaCandidateOrBlock,
-  });
-};
+  const loadUserSchemaFile = async (file: File | null) => {
+    return loadUserSchemaFileAction({
+      file,
+      st,
+      dispatch,
+      commitSchemaCandidateOrBlock,
+    });
+  };
 
   /** =========================
    * FetchPublicFile for DEV Testing Purpose
@@ -307,12 +315,13 @@ if (process.env.NODE_ENV !== "production") {
         status: r.status,
         statusText: r.statusText,
       });
-      throw new Error(`Cannot find public file: ${filename} (GET ${url}, ${r.status})`);
+      throw new Error(
+        `Cannot find public file: ${filename} (GET ${url}, ${r.status})`
+      );
     }
     const blob = await r.blob();
     return new File([blob], filename, { type: mime });
   }
-
 
   /** =========================
    * Effects (moved out)
@@ -322,6 +331,7 @@ if (process.env.NODE_ENV !== "production") {
     dispatch,
     constraintsBaselineRef,
     defaultNotice: DEFAULT_NOTICE_LOCAL,
+    parseTokenRef, // ✅ NEW
   });
 
   useParseJdEffect({ st, dispatch, fetchDbg, jdBaselineRef });
@@ -337,29 +347,29 @@ if (process.env.NODE_ENV !== "production") {
       fetchDbg,
       jobIdRef,
       constraintsBaselineRef,
+      parseTokenRef, // ✅ NEW
     });
   };
 
   const devBootstrap = async () => {
-  // only allow in dev
-  console.log("[DEV][BOOTSTRAP] clicked, NODE_ENV=", process.env.NODE_ENV);
+    console.log("[DEV][BOOTSTRAP] clicked, NODE_ENV=", process.env.NODE_ENV);
 
-  if (process.env.NODE_ENV !== "development") {
-    setNotice("Dev bootstrap is only available in development.");
-    return;
-  }
+    if (process.env.NODE_ENV !== "development") {
+      setNotice("Dev bootstrap is only available in development.");
+      return;
+    }
 
-  try {
-    await devBootstrapAction({
-      st,
-      dispatch,
-      commitSchemaCandidateOrBlock,
-      parseCv, // 自动跑 parse；如果你想只加载不 parse，把 parseCv 这行删掉
-    });
-  } catch (e: any) {
-    setNotice(e?.message || "Dev bootstrap failed.");
-  }
-};
+    try {
+      await devBootstrapAction({
+        st,
+        dispatch,
+        commitSchemaCandidateOrBlock,
+        parseCv,
+      });
+    } catch (e: any) {
+      setNotice(e?.message || "Dev bootstrap failed.");
+    }
+  };
 
   /** =========================
    * Chat adjust structure (moved to action)
@@ -514,11 +524,6 @@ if (process.env.NODE_ENV !== "production") {
   /** =========================
    * InputsPanel-facing computed flags (Page expects these names)
    * ========================= */
-
-  /** =========================
-   * InputsPanel-facing computed flags (Page expects these names)
-   * ========================= */
-
   const schemaReady = !!st.currentSchema;
 
   const parseDisabled = useMemo(() => {
@@ -526,18 +531,16 @@ if (process.env.NODE_ENV !== "production") {
       resumeFile: !!st.resumeFile,
       schemaFile: !!st.schemaFile,
       parseBusy: st.parseBusy,
-      parseDisabled_reason: !st.resumeFile ? "no_resume" : st.parseBusy ? "busy" : "enabled",
+      parseDisabled_reason: !st.resumeFile
+        ? "no_resume"
+        : st.parseBusy
+          ? "busy"
+          : "enabled",
     });
 
     // Schema is now OPTIONAL - only require resume file
-    return (
-      !st.resumeFile ||
-      st.parseBusy
-    );
-  }, [
-    st.resumeFile,
-    st.parseBusy,
-  ]);
+    return !st.resumeFile || st.parseBusy;
+  }, [st.resumeFile, st.parseBusy]);
 
   const jdHint = useMemo(() => {
     if (!st.jdFile && !st.jdText.trim())
@@ -545,7 +548,6 @@ if (process.env.NODE_ENV !== "production") {
     if (st.jdFile && !st.jdText.trim()) return "Parsing JD…";
     return "You may edit JD text before optimizing.";
   }, [st.jdFile, st.jdText]);
-
 
   const wholeCvDisabled = useMemo(() => {
     if (st.autoOptimizing) return true;
@@ -579,9 +581,7 @@ if (process.env.NODE_ENV !== "production") {
       | ((prev: Record<string, boolean>) => Record<string, boolean>)
   ) => {
     const next =
-      typeof updater === "function"
-        ? (updater as any)(st.openById)
-        : updater;
+      typeof updater === "function" ? (updater as any)(st.openById) : updater;
     dispatch({ type: "SET", patch: { openById: next } });
   };
 
@@ -591,9 +591,7 @@ if (process.env.NODE_ENV !== "production") {
       | ((prev: Record<string, boolean>) => Record<string, boolean>)
   ) => {
     const next =
-      typeof updater === "function"
-        ? (updater as any)(st.openGroups)
-        : updater;
+      typeof updater === "function" ? (updater as any)(st.openGroups) : updater;
     dispatch({ type: "SET", patch: { openGroups: next } });
   };
 
@@ -604,31 +602,30 @@ if (process.env.NODE_ENV !== "production") {
     dispatch({ type: "SET", patch: { previewUrl: v } });
 
   const refreshPreview = async () => {
-  return refreshPreviewAction({ st, dispatch, setNotice });
-};
+    return refreshPreviewAction({ st, dispatch, setNotice });
+  };
 
-
-const generatePdf = async () => {
-  return generatePdfAction({
-    st,
-    dispatch,
-    setNotice,
-    fetchDbg,
-    jobIdRef,
-    sectionsRef,
-    ensureJobId: ensureJobIdFn,
-  });
-};
+  const generatePdf = async () => {
+    return generatePdfAction({
+      st,
+      dispatch,
+      setNotice,
+      fetchDbg,
+      jobIdRef,
+      sectionsRef,
+      ensureJobId: ensureJobIdFn,
+    });
+  };
 
   const generateCvDownloads = async () => {
-  return generateCvDownloadsAction({
-    st,
-    dispatch,
-    fetchDbg,
-    jobIdRef,
-    sectionsRef,
-  });
-};
+    return generateCvDownloadsAction({
+      st,
+      dispatch,
+      fetchDbg,
+      jobIdRef,
+      sectionsRef,
+    });
+  };
 
   /** =========================
    * Optimize (moved to action)
@@ -726,9 +723,6 @@ const generatePdf = async () => {
       (st.sections.length ? buildBaselineSchemaFromSections(st.sections) : null)
     );
   }, [st.currentSchemaDebug, st.currentSchema, st.sections]);
-
-
-
 
   /** =========================
    * Return (must match Page.tsx fields)
@@ -852,6 +846,5 @@ const generatePdf = async () => {
     resetAll,
     handleChatUpdate,
     devBootstrap,
-
   };
 }

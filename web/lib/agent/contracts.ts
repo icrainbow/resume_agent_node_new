@@ -26,10 +26,11 @@ export type AgentContext = {
   schema_dirty?: boolean;
 
   proxy_to_architect?: boolean;
-  route_hint?: "architect" | "rule" | "auto";
+  route_hint?: "architect" | "rule" | "auto" | "architect_agent";
 };
 
 export type AgentResult = {
   assistant_message: string;
   next_suggested_action: NextSuggestedAction;
+  agent_id_used?: string;
 };

@@ -16,6 +16,7 @@ export type NextSuggestedAction =
       payload?: Record<string, any>;
     }
   | { kind: "none" };
+
 export type AgentContext = {
   has_resume?: boolean;
   has_schema?: boolean;

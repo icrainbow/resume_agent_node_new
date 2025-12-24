@@ -1,7 +1,7 @@
 // web/app/api/agent/route.ts
 import { NextResponse } from "next/server";
 import { orchestrateAgent } from "@/lib/agent/orchestrator";
-import type { NextSuggestedAction } from "@/lib/agent/contracts";
+import type { NextSuggestedAction, AgentContext } from "@/lib/agent/contracts";
 
 export const runtime = "nodejs";
 
@@ -10,26 +10,7 @@ type ChatMsg = {
   content: string;
 };
 
-type AgentContext = {
-  has_resume?: boolean;
-  has_schema?: boolean;
-  has_jd?: boolean;
-  sections_count?: number;
-  cv_sections_confirmed?: boolean;
-  schema_dirty?: boolean;
 
-  /**
-   * ✅ NEW (optional): allow the client to explicitly request proxy to /api/architect.
-   * This keeps changes minimal and avoids “surprising” routing decisions.
-   */
-  proxy_to_architect?: boolean;
-
-  /**
-   * ✅ NEW (optional): pass-through hint for future routing (not used now).
-   * e.g. "architect" | "rule" | "auto"
-   */
-  route_hint?: "architect" | "rule" | "auto";
-};
 
 type AgentInput = {
   messages?: ChatMsg[];

@@ -1,5 +1,7 @@
 // web/app/api/agent/route.ts
 import { NextResponse } from "next/server";
+import { orchestrateAgent } from "@/lib/agent/orchestrator";
+import type { NextSuggestedAction } from "@/lib/agent/contracts";
 
 export const runtime = "nodejs";
 
@@ -40,20 +42,27 @@ type AgentInput = {
   architect_payload?: any;
 };
 
-type NextSuggestedAction =
-  | {
-      kind: "cta";
-      id:
-        | "upload_resume"
-        | "parse_cv"
-        | "upload_schema"
-        | "confirm_sections"
-        | "optimize_whole"
-        | "switch_to_manual";
-        label: string;
-      payload?: Record<string, any>;
-    }
-  | { kind: "none" };
+type UiAction = {
+  key:
+    | "upload_resume"
+    | "parse_cv"
+    | "upload_schema"
+    | "confirm_sections"
+    | "adjust_structure"
+    | "optimize_whole"
+    | "switch_to_manual";
+  label: string;
+};
+
+
+// =========================
+// Phase 1 — Orchestrator Skeleton (NO behavior change)
+// Step 1: Introduce AgentResult + single-agent wrapper (NOT wired yet)
+// =========================
+
+
+
+
 
 function pickNextSuggestedAction(
   ctx: AgentContext | undefined
@@ -173,7 +182,32 @@ function buildAssistantMessage(ctx: AgentContext | undefined): string {
   return "Tell me what you want to do next (optimize, restructure, or start from scratch).";
 }
 
-function buildUiHints(ctx: AgentContext | undefined): {
+function ctaToQuickReplyLabel(a: any): string | null {
+  if (!a || a.kind !== "cta") return null;
+
+  const id = String(a.id || "");
+  switch (id) {
+    case "upload_resume":
+      return "Upload resume";
+    case "parse_cv":
+      return "Parse CV";
+    case "upload_schema":
+      return "Upload schema";
+    case "confirm_sections":
+      return "Confirm sections";
+    case "optimize_whole":
+      return "One-click optimize";
+    case "switch_to_manual":
+      return "Switch to Manual Mode";
+    default:
+      return null;
+  }
+}
+
+function buildUiHints(
+  ctx: AgentContext | undefined,
+  nsa: NextSuggestedAction
+): {
   reply: string;
   quick_replies: string[];
   ui_action: string | null;
@@ -196,23 +230,33 @@ function buildUiHints(ctx: AgentContext | undefined): {
     ui_action: null as string | null,
   };
 
-  if (!hasResume) {
-    hints.quick_replies = [
-      "I have a resume (will upload)",
-      "Build from scratch via chat",
-    ];
-    hints.ui_action = null;
+  // ✅ Primary CTA drives quick replies (single source of truth)
+  const primary = ctaToQuickReplyLabel(nsa);
+  hints.quick_replies = primary ? [primary] : [];
+
+  // ✅ Secondary CTA only when resume exists but has no sections:
+  // Keep Parse CV as primary, add Upload schema as extra option.
+  if (hasResume && sections === 0) {
+    if (!hints.quick_replies.includes("Parse CV")) {
+      hints.quick_replies.unshift("Parse CV");
+    }
+    if (!hints.quick_replies.includes("Upload schema")) {
+      hints.quick_replies.push("Upload schema");
+    }
+    hints.ui_action = "open_tools";
     return hints;
   }
 
-if (sections === 0) {
-  hints.quick_replies = [
-    "Parse CV",
-    "Upload schema",
-  ];
-  hints.ui_action = "start_parse";
-  return hints;
-}
+  // For all other branches below, we keep minimal behavior:
+  // if you want additional buttons later, we add them explicitly.
+  // ✅ When sections are confirmed and JD exists (and schema is NOT dirty),
+  // show Optimize + Adjust (per your UX requirement).
+
+  if (confirmed && hasJd && !schemaDirty) {
+    hints.quick_replies = ["One-click optimize", "Adjust structure"];
+    hints.ui_action = "open_tools";
+    return hints;
+  }
 
   if (!confirmed) {
     hints.quick_replies = [
@@ -230,22 +274,18 @@ if (sections === 0) {
     hints.quick_replies = [
       "Confirm sections",
       "Adjust structure",
-      "Switch to Manual Mode",
       "Show diagnostics",
+      "Switch to Manual Mode",
     ];
     hints.ui_action = "open_tools";
     return hints;
   }
 
   if (confirmed && hasJd) {
-    hints.quick_replies = [
-      "One-click optimize",
-      "Adjust structure",
-    ];
+    hints.quick_replies = ["One-click optimize", "Adjust structure"];
     hints.ui_action = "open_tools";
     return hints;
   }
-
 
   if (confirmed && !hasJd) {
     hints.quick_replies = [
@@ -333,26 +373,34 @@ export async function POST(req: Request) {
   }
 
   // ---- Default: your existing rule-based (non-LLM) MVP agent ----
-  const assistant_message = buildAssistantMessage(ctx);
-  const next_suggested_action = pickNextSuggestedAction(ctx);
+// ---- Default: your existing rule-based (non-LLM) MVP agent ----
+const r = orchestrateAgent({
+  ctx,
+  pickNextSuggestedAction,
+  buildAssistantMessage,
+});
 
-  // ✅ Add non-breaking UI hint fields (client may ignore for now)
-  const ui = buildUiHints(ctx);
+const nextSuggestedAction = r.next_suggested_action;
+const assistant_message = r.assistant_message;
 
-  return NextResponse.json({
-    ok: true,
+// ✅ Add non-breaking UI hint fields (client may ignore for now)
+const ui = buildUiHints(ctx, nextSuggestedAction);
 
-    // backward-compatible fields consumed by current ArchitectChat
-    assistant_message,
-    pending_requirements: null,
-    schema_dirty: !!ctx?.schema_dirty,
-    next_suggested_action,
+return NextResponse.json({
+  ok: true,
 
-    // forward-compatible fields (safe to ignore)
-    reply: ui.reply,
-    quick_replies: ui.quick_replies,
-    ui_action: ui.ui_action,
-  });
+  // backward-compatible fields consumed by current ArchitectChat
+  assistant_message,
+  pending_requirements: null,
+  schema_dirty: !!ctx?.schema_dirty,
+  next_suggested_action: nextSuggestedAction,
+
+  // forward-compatible fields (safe to ignore)
+  reply: ui.reply,
+  quick_replies: ui.quick_replies,
+  ui_action: ui.ui_action,
+});
+
 }
 
 export async function GET() {

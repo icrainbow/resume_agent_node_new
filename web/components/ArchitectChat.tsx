@@ -289,11 +289,48 @@ Never output schema JSON in chat mode.
     return t.trim();
   }
 
-  function pickQuickReplies(json: any): string[] {
-    const arr = json?.quick_replies;
-    if (!Array.isArray(arr)) return [];
-    return arr.filter((x: any) => typeof x === "string" && x.trim().length > 0);
+function pickQuickReplies(json: any): string[] {
+  // 1) Existing quick_replies from API (if any)
+  const arr = json?.quick_replies;
+  const base = Array.isArray(arr)
+    ? arr
+        .filter((x: any) => typeof x === "string" && x.trim().length > 0)
+        .map((s: string) => s.trim())
+    : [];
+
+  // 2) Add CTA fallback from next_suggested_action (if provided)
+  //    So UI always has at least one guided action.
+  const nsa = json?.next_suggested_action;
+  if (nsa && nsa.kind === "cta") {
+    const id = String(nsa.id || "").trim();
+    const label = String(nsa.label || "").trim();
+
+    // Map CTA id -> the exact button text your applyQuickReplyAction can understand
+    const ID_TO_LABEL: Record<string, string> = {
+      upload_resume: "Upload resume",
+      parse_cv: "Parse CV",
+      upload_schema: "Upload schema",
+      confirm_sections: "Confirm sections",
+      optimize_whole: "One-click optimize",
+      switch_to_manual: "Switch to Manual Mode",
+    };
+
+    const ctaText = ID_TO_LABEL[id] || label || "";
+
+    if (ctaText) base.unshift(ctaText);
   }
+
+  // 3) Dedupe while preserving order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of base) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
 
   // 🧩 NEW: parse structured CTA actions (optional)
   function pickUiActions(json: any): UiAction[] {
@@ -349,165 +386,117 @@ Never output schema JSON in chat mode.
   }
 
   // ✅ apply quick reply as a UI action (best-effort). Returns true if handled.
-  function applyQuickReplyAction(label: string): boolean {
-    const raw = (label || "").trim();
-    if (!raw) return false;
+ function applyQuickReplyAction(label: string): boolean {
+  const raw = (label || "").trim();
+  if (!raw) return false;
 
-    const t = raw.toLowerCase();
+  const key = raw.toLowerCase();
 
-    /**
-     * 🚨 HARD SAFETY GUARD
-     * If schema is dirty, NEVER allow optimize.
-     * Force user back to "Confirm Sections" instead.
-     *
-     * This is a frontend safety net in case agent logic or quick replies misfire.
-     */
-    if (schemaDirty && (t.includes("optimize") || t.includes("one-click"))) {
-      return clickUi(
-        [
-          "[data-testid='btn-confirm-sections']",
-          "[data-testid='confirm-sections']",
-          "[data-action='confirm-sections']",
-        ],
-        ["confirm cv sections", "confirm sections", "confirm"]
-      );
+  /**
+   * 🚨 HARD SAFETY GUARD
+   * If schema is dirty, NEVER allow optimize.
+   * Force user back to "Confirm Sections" instead.
+   *
+   * This is a frontend safety net in case agent logic or quick replies misfire.
+   */
+  if (schemaDirty && (key.includes("optimize") || key.includes("one-click"))) {
+    return clickUi(
+      [
+        "[data-testid='btn-confirm-sections']",
+        "[data-testid='confirm-sections']",
+        "[data-action='confirm-sections']",
+      ],
+      ["confirm cv sections", "confirm sections", "confirm"]
+    );
+  }
+
+  // Manual mode routing (best-effort)
+  if (key.includes("manual")) {
+    try {
+      window.location.href = "/manualmode";
+      return true;
+    } catch {
+      return false;
     }
+  }
 
-    // 🔒 Explicit UI action aliases (highest priority)
-    const ACTION_MAP: Record<string, () => boolean> = {
-      "parse cv": () =>
-        clickUi(
-          [
-            "[data-testid='btn-parse-cv']",
-            "[data-testid='parse-cv']",
-            "[data-action='parse-cv']",
-          ],
-          ["parse cv", "parse resume", "parse"]
-        ),
-
-      "confirm sections": () =>
-        clickUi(
-          [
-            "[data-testid='btn-confirm-sections']",
-            "[data-testid='confirm-sections']",
-            "[data-action='confirm-sections']",
-          ],
-          ["confirm cv sections", "confirm sections", "confirm"]
-        ),
-
-      "one-click optimize": () =>
-        clickUi(
-          [
-            "[data-testid='btn-optimize-whole']",
-            "[data-testid='optimize-whole']",
-            "[data-action='optimize-whole']",
-          ],
-          ["one-click optimize", "optimize whole", "optimize"]
-        ),
-
-      "adjust structure": () =>
-        clickUi(
-          [
-            "[data-testid='btn-adjust-structure']",
-            "[data-testid='adjust-structure']",
-            "[data-action='adjust-structure']",
-          ],
-          ["adjust structure", "adjust"]
-        ),
-
-      "upload schema": () =>
-        clickUi(
-          [
-            // ✅ prefer the clickable label/button
-            "[data-testid='btn-upload-schema']",
-            // ✅ fallback: explicit input (some browsers allow click to open picker)
-            "#schema-upload",
-            "[data-testid='upload-schema']",
-            // ✅ last resort
-            "[data-action='upload-schema']",
-          ],
-          ["upload schema", "upload cv schema", "schema"]
-        ),
-
-    };
-
-    const key = raw.toLowerCase();
-    if (ACTION_MAP[key]) return ACTION_MAP[key]();
-
-    // Manual mode routing (best-effort)
-    if (t.includes("manual")) {
-      try {
-        window.location.href = "/manualmode";
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    // Adjust structure
-    if (t.includes("adjust") && t.includes("structure")) {
-      return clickUi(
-        [
-          "[data-testid='btn-adjust-structure']",
-          "[data-testid='adjust-structure']",
-          "[data-action='adjust-structure']",
-        ],
-        ["adjust structure", "adjust"]
-      );
-    }
-
-    // Upload schema (kept once; removed duplicate branch)
-    if (t.includes("upload") && t.includes("schema")) {
-      return clickUi(
-        [
-          "[data-testid='btn-upload-schema']",
-          "[data-testid='upload-schema']",
-          "[data-action='upload-schema']",
-          "input[type='file'][name='schema']",
-          "input[type='file'][accept*='json']",
-        ],
-        ["upload schema", "upload section schema", "schema"]
-      );
-    }
-
-    // Parse CV
-    if (t.includes("parse")) {
-      return clickUi(
+  // 🔒 Explicit UI action aliases (highest priority)
+  const ACTION_MAP: Record<string, () => boolean> = {
+    "parse cv": () =>
+      clickUi(
         [
           "[data-testid='btn-parse-cv']",
           "[data-testid='parse-cv']",
           "[data-action='parse-cv']",
         ],
         ["parse cv", "parse resume", "parse"]
-      );
-    }
+      ),
 
-    // Confirm sections
-    if (t.includes("confirm")) {
-      return clickUi(
+    "confirm sections": () =>
+      clickUi(
         [
           "[data-testid='btn-confirm-sections']",
           "[data-testid='confirm-sections']",
           "[data-action='confirm-sections']",
         ],
         ["confirm cv sections", "confirm sections", "confirm"]
-      );
-    }
+      ),
 
-    // Optimize whole (only reachable when schemaDirty === false)
-    if (t.includes("optimize") || t.includes("one-click")) {
-      return clickUi(
+    "one-click optimize": () =>
+      clickUi(
         [
           "[data-testid='btn-optimize-whole']",
           "[data-testid='optimize-whole']",
           "[data-action='optimize-whole']",
         ],
         ["one-click optimize", "optimize whole", "optimize"]
-      );
-    }
+      ),
 
-    return false;
-  }
+    "adjust structure": () =>
+      clickUi(
+        [
+          "[data-testid='btn-adjust-structure']",
+          "[data-testid='adjust-structure']",
+          "[data-action='adjust-structure']",
+        ],
+        ["adjust structure", "adjust"]
+      ),
+
+    "upload schema": () =>
+      clickUi(
+        [
+          // Prefer the label/button trigger (opens file picker)
+          "[data-testid='btn-upload-schema']",
+          "[data-action='upload-schema']",
+          "label[for='schema-upload']",
+          "#schema-upload",
+        ],
+        ["upload schema", "schema"]
+      ),
+  };
+
+  // 1) exact match (preferred)
+  if (ACTION_MAP[key]) return ACTION_MAP[key]();
+
+  // 2) fallback fuzzy match (kept minimal, but centralized)
+  // Adjust structure
+  if (key.includes("adjust") && key.includes("structure")) return ACTION_MAP["adjust structure"]();
+
+  // Parse CV
+  if (key.includes("parse")) return ACTION_MAP["parse cv"]();
+
+  // Confirm sections
+  if (key.includes("confirm")) return ACTION_MAP["confirm sections"]();
+
+  // Upload schema
+  if (key.includes("upload") && key.includes("schema")) return ACTION_MAP["upload schema"]();
+
+  // Optimize whole (only reachable when schemaDirty === false due to guard above)
+  if (key.includes("optimize") || key.includes("one-click")) return ACTION_MAP["one-click optimize"]();
+
+  return false;
+}
+
 
   // centralized click handler (UI action first, fallback to send text)
   const handleQuickReplyClick = async (q: string) => {

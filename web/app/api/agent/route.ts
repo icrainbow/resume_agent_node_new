@@ -331,6 +331,7 @@ export async function POST(req: Request) {
   }
 
   const ctx = body?.context ?? {};
+  const origin = new URL(req.url).origin;
 
   /**
    * ✅ Routing rule (MINIMAL / NON-SURPRISING):
@@ -355,16 +356,18 @@ export async function POST(req: Request) {
 
   // ---- Phase 2: NEW agent routing (architect_agent uses architect agent) ----
   if (ctx?.route_hint === "architect_agent") {
-    const r = orchestrateAgent({
+    const r = await orchestrateAgent({
       ctx,
       pickNextSuggestedAction,
       buildAssistantMessage,
       active_agent_id: "architect",
+      origin,
     });
 
     const nextSuggestedAction = r.next_suggested_action;
     const assistant_message = r.assistant_message;
     const agent_id_used = r.agent_id_used;
+    const error = r.error;
 
     const ui = buildUiHints(ctx, nextSuggestedAction);
 
@@ -378,20 +381,23 @@ export async function POST(req: Request) {
       quick_replies: ui.quick_replies,
       ui_action: ui.ui_action,
       agent_id_used,
+      error,
     });
   }
 
   // ---- Default: your existing rule-based (non-LLM) MVP agent ----
 // ---- Default: your existing rule-based (non-LLM) MVP agent ----
-const r = orchestrateAgent({
+const r = await orchestrateAgent({
   ctx,
   pickNextSuggestedAction,
   buildAssistantMessage,
+  origin,
 });
 
 const nextSuggestedAction = r.next_suggested_action;
 const assistant_message = r.assistant_message;
 const agent_id_used = r.agent_id_used;
+const error = r.error;
 
 // ✅ Add non-breaking UI hint fields (client may ignore for now)
 const ui = buildUiHints(ctx, nextSuggestedAction);
@@ -410,6 +416,7 @@ return NextResponse.json({
   quick_replies: ui.quick_replies,
   ui_action: ui.ui_action,
   agent_id_used,
+  error,
 });
 
 }

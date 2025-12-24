@@ -19,13 +19,16 @@ export type AgentFunction = (args: {
   ctx: AgentInput["context"];
   pickNextSuggestedAction: (ctx: AgentInput["context"]) => NextSuggestedAction;
   buildAssistantMessage: (ctx: AgentInput["context"]) => string;
-}) => AgentResult;
+  origin?: string;
+}) => Promise<AgentResult> | AgentResult;
 
 export function ruleBasedAgent(args: {
   ctx: AgentInput["context"];
   pickNextSuggestedAction: (ctx: AgentInput["context"]) => NextSuggestedAction;
   buildAssistantMessage: (ctx: AgentInput["context"]) => string;
+  origin?: string;
 }): AgentResult {
+  // origin is accepted but not used by rule agent
   const next = args.pickNextSuggestedAction(args.ctx);
   const assistant_message = args.buildAssistantMessage(args.ctx);
   return { assistant_message, next_suggested_action: next };
@@ -42,17 +45,19 @@ function selectAgent(active_agent_id?: string): { agent: AgentFunction; id: stri
   return { agent, id: AGENT_REGISTRY[id] ? id : "rule" };
 }
 
-export function orchestrateAgent(args: {
+export async function orchestrateAgent(args: {
   ctx: AgentInput["context"];
   pickNextSuggestedAction: (ctx: AgentInput["context"]) => NextSuggestedAction;
   buildAssistantMessage: (ctx: AgentInput["context"]) => string;
   active_agent_id?: string;
-}): AgentResult {
+  origin?: string;
+}): Promise<AgentResult> {
   const { agent, id } = selectAgent(args.active_agent_id);
-  const result = agent({
+  const result = await agent({
     ctx: args.ctx,
     pickNextSuggestedAction: args.pickNextSuggestedAction,
     buildAssistantMessage: args.buildAssistantMessage,
+    origin: args.origin,
   });
 
   return {

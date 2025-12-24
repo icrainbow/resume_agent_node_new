@@ -33,4 +33,9 @@ export type AgentResult = {
   assistant_message: string;
   next_suggested_action: NextSuggestedAction;
   agent_id_used?: string;
+  /**
+   * Optional error message if agent encountered an error but failed closed.
+   * If set, agent returned fallback outputs instead of failing the request.
+   */
+  error?: string;
 };

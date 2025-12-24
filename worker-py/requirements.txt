@@ -4,3 +4,5 @@ python-dotenv
 python-docx
 openai
 pypdf
+reportlab>=4.0
+langchain>=0.0.208

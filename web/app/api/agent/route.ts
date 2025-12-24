@@ -46,10 +46,11 @@ type NextSuggestedAction =
       id:
         | "upload_resume"
         | "parse_cv"
+        | "upload_schema"
         | "confirm_sections"
         | "optimize_whole"
         | "switch_to_manual";
-      label: string;
+        label: string;
       payload?: Record<string, any>;
     }
   | { kind: "none" };
@@ -69,13 +70,17 @@ function pickNextSuggestedAction(
       label: "Upload your resume to begin",
     };
   }
-  if (sections === 0) {
-    return {
-      kind: "cta",
-      id: "parse_cv",
-      label: "Parse resume into sections",
-    };
-  }
+
+  // has resume, but no sections yet
+  // provide both parse_cv and upload_schema
+if (sections === 0) {
+  return {
+    kind: "cta",
+    id: "parse_cv",
+    label: "Parse resume into sections",
+  };
+}
+
   if (!confirmed) {
     return {
       kind: "cta",
@@ -83,6 +88,7 @@ function pickNextSuggestedAction(
       label: "Confirm parsed sections",
     };
   }
+
   if (!!ctx?.schema_dirty) {
     return {
       kind: "cta",
@@ -90,6 +96,7 @@ function pickNextSuggestedAction(
       label: "Confirm updated section structure",
     };
   }
+
   if (hasJd) {
     return {
       kind: "cta",
@@ -97,8 +104,10 @@ function pickNextSuggestedAction(
       label: "One-click optimize against JD",
     };
   }
+
   return { kind: "none" };
 }
+
 
 function buildAssistantMessage(ctx: AgentContext | undefined): string {
   const hasResume = !!ctx?.has_resume;
@@ -196,15 +205,14 @@ function buildUiHints(ctx: AgentContext | undefined): {
     return hints;
   }
 
-  if (sections === 0) {
-    hints.quick_replies = [
-      hasSchema ? "Parse CV (validate schema)" : "Parse CV now",
-      "Switch to Manual Mode",
-    ];
-    // UI action is only a hint; your UI may ignore it for now
-    hints.ui_action = "start_parse";
-    return hints;
-  }
+if (sections === 0) {
+  hints.quick_replies = [
+    "Parse CV",
+    "Upload schema",
+  ];
+  hints.ui_action = "start_parse";
+  return hints;
+}
 
   if (!confirmed) {
     hints.quick_replies = [

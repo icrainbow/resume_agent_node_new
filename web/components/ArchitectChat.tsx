@@ -84,6 +84,12 @@ function stableOutlineSig(outline: any, space = 0) {
   }
 }
 
+// 🧩 NEW: structured UI actions from /api/agent
+type UiAction = {
+  key: string; // e.g. "parse_cv"
+  label?: string; // display text
+};
+
 export default function ArchitectChat(props: ArchitectChatProps) {
   const {
     currentSchema,
@@ -111,8 +117,11 @@ export default function ArchitectChat(props: ArchitectChatProps) {
   const [input, setInput] = useState<string>("");
   const [netError, setNetError] = useState<string>("");
 
-  // ✅ NEW: quick replies from /api/agent (optional)
+  // quick replies from /api/agent (optional)
   const [quickReplies, setQuickReplies] = useState<string[]>([]);
+
+  // 🧩 NEW: structured actions from /api/agent (optional)
+  const [uiActions, setUiActions] = useState<UiAction[]>([]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
@@ -190,7 +199,16 @@ Never output schema JSON in chat mode.
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, visible, netError, collapsed, presentation, dockHeight, quickReplies]);
+  }, [
+    messages,
+    visible,
+    netError,
+    collapsed,
+    presentation,
+    dockHeight,
+    quickReplies,
+    uiActions,
+  ]);
 
   /* =========================
      Welcome seeding
@@ -266,20 +284,24 @@ Never output schema JSON in chat mode.
     }
   }
 
-  // ✅ NEW: helper to pull assistant reply in a backward/forward compatible way
   function pickAssistantText(json: any): string {
     const t = (json?.reply ?? json?.assistant_message ?? json?.message ?? "").toString();
     return t.trim();
   }
 
-  // ✅ NEW: helper to normalize quick replies
   function pickQuickReplies(json: any): string[] {
     const arr = json?.quick_replies;
     if (!Array.isArray(arr)) return [];
     return arr.filter((x: any) => typeof x === "string" && x.trim().length > 0);
   }
 
-  // ✅ NEW: try to find a button by "contains text" (case-insensitive)
+  // 🧩 NEW: parse structured CTA actions (optional)
+  function pickUiActions(json: any): UiAction[] {
+    const arr = json?.actions;
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((x: any) => typeof x?.key === "string" && x.key.trim().length > 0);
+  }
+
   function findButtonByText(textNeedles: string[]): HTMLButtonElement | null {
     try {
       const needles = (textNeedles || [])
@@ -299,7 +321,6 @@ Never output schema JSON in chat mode.
     }
   }
 
-  // ✅ NEW: click UI by selector candidates, fallback to button text search
   function clickUi(selectorCandidates: string[], textNeedles: string[]): boolean {
     try {
       for (const sel of selectorCandidates || []) {
@@ -327,103 +348,171 @@ Never output schema JSON in chat mode.
     return false;
   }
 
-  // ✅ NEW: apply quick reply as a UI action (best-effort). Returns true if handled.
-function applyQuickReplyAction(label: string): boolean {
-  const raw = (label || "").trim();
-  if (!raw) return false;
+  // ✅ apply quick reply as a UI action (best-effort). Returns true if handled.
+  function applyQuickReplyAction(label: string): boolean {
+    const raw = (label || "").trim();
+    if (!raw) return false;
 
-  const t = raw.toLowerCase();
+    const t = raw.toLowerCase();
 
-  /**
-   * 🚨 HARD SAFETY GUARD
-   * If schema is dirty, NEVER allow optimize.
-   * Force user back to "Confirm Sections" instead.
-   *
-   * This is a frontend safety net in case agent logic or quick replies misfire.
-   */
-  if (
-    schemaDirty &&
-    (t.includes("optimize") || t.includes("one-click"))
-  ) {
-    return clickUi(
-      [
-        "[data-testid='btn-confirm-sections']",
-        "[data-testid='confirm-sections']",
-        "[data-action='confirm-sections']",
-      ],
-      ["confirm cv sections", "confirm sections", "confirm"]
-    );
-  }
-
-  // Manual mode routing (best-effort)
-  if (t.includes("manual")) {
-    try {
-      window.location.href = "/manualmode";
-      return true;
-    } catch {
-      return false;
+    /**
+     * 🚨 HARD SAFETY GUARD
+     * If schema is dirty, NEVER allow optimize.
+     * Force user back to "Confirm Sections" instead.
+     *
+     * This is a frontend safety net in case agent logic or quick replies misfire.
+     */
+    if (schemaDirty && (t.includes("optimize") || t.includes("one-click"))) {
+      return clickUi(
+        [
+          "[data-testid='btn-confirm-sections']",
+          "[data-testid='confirm-sections']",
+          "[data-action='confirm-sections']",
+        ],
+        ["confirm cv sections", "confirm sections", "confirm"]
+      );
     }
+
+    // 🔒 Explicit UI action aliases (highest priority)
+    const ACTION_MAP: Record<string, () => boolean> = {
+      "parse cv": () =>
+        clickUi(
+          [
+            "[data-testid='btn-parse-cv']",
+            "[data-testid='parse-cv']",
+            "[data-action='parse-cv']",
+          ],
+          ["parse cv", "parse resume", "parse"]
+        ),
+
+      "confirm sections": () =>
+        clickUi(
+          [
+            "[data-testid='btn-confirm-sections']",
+            "[data-testid='confirm-sections']",
+            "[data-action='confirm-sections']",
+          ],
+          ["confirm cv sections", "confirm sections", "confirm"]
+        ),
+
+      "one-click optimize": () =>
+        clickUi(
+          [
+            "[data-testid='btn-optimize-whole']",
+            "[data-testid='optimize-whole']",
+            "[data-action='optimize-whole']",
+          ],
+          ["one-click optimize", "optimize whole", "optimize"]
+        ),
+
+      "adjust structure": () =>
+        clickUi(
+          [
+            "[data-testid='btn-adjust-structure']",
+            "[data-testid='adjust-structure']",
+            "[data-action='adjust-structure']",
+          ],
+          ["adjust structure", "adjust"]
+        ),
+
+      "upload schema": () =>
+        clickUi(
+          [
+            "[data-testid='btn-upload-schema']",
+            "[data-testid='upload-schema']",
+            "[data-action='upload-schema']",
+            "input[type='file'][name='schema']",
+            "input[type='file'][accept*='json']",
+          ],
+          ["upload schema", "upload section schema", "schema"]
+        ),
+    };
+
+    const key = raw.toLowerCase();
+    if (ACTION_MAP[key]) return ACTION_MAP[key]();
+
+    // Manual mode routing (best-effort)
+    if (t.includes("manual")) {
+      try {
+        window.location.href = "/manualmode";
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    // Adjust structure
+    if (t.includes("adjust") && t.includes("structure")) {
+      return clickUi(
+        [
+          "[data-testid='btn-adjust-structure']",
+          "[data-testid='adjust-structure']",
+          "[data-action='adjust-structure']",
+        ],
+        ["adjust structure", "adjust"]
+      );
+    }
+
+    // Upload schema (kept once; removed duplicate branch)
+    if (t.includes("upload") && t.includes("schema")) {
+      return clickUi(
+        [
+          "[data-testid='btn-upload-schema']",
+          "[data-testid='upload-schema']",
+          "[data-action='upload-schema']",
+          "input[type='file'][name='schema']",
+          "input[type='file'][accept*='json']",
+        ],
+        ["upload schema", "upload section schema", "schema"]
+      );
+    }
+
+    // Parse CV
+    if (t.includes("parse")) {
+      return clickUi(
+        [
+          "[data-testid='btn-parse-cv']",
+          "[data-testid='parse-cv']",
+          "[data-action='parse-cv']",
+        ],
+        ["parse cv", "parse resume", "parse"]
+      );
+    }
+
+    // Confirm sections
+    if (t.includes("confirm")) {
+      return clickUi(
+        [
+          "[data-testid='btn-confirm-sections']",
+          "[data-testid='confirm-sections']",
+          "[data-action='confirm-sections']",
+        ],
+        ["confirm cv sections", "confirm sections", "confirm"]
+      );
+    }
+
+    // Optimize whole (only reachable when schemaDirty === false)
+    if (t.includes("optimize") || t.includes("one-click")) {
+      return clickUi(
+        [
+          "[data-testid='btn-optimize-whole']",
+          "[data-testid='optimize-whole']",
+          "[data-action='optimize-whole']",
+        ],
+        ["one-click optimize", "optimize whole", "optimize"]
+      );
+    }
+
+    return false;
   }
 
-  // Adjust structure
-  if (t.includes("adjust") && t.includes("structure")) {
-    return clickUi(
-      [
-        "[data-testid='btn-adjust-structure']",
-        "[data-testid='adjust-structure']",
-        "[data-action='adjust-structure']",
-      ],
-      ["adjust structure", "adjust"]
-    );
-  }
-
-  // Parse CV
-  if (t.includes("parse")) {
-    return clickUi(
-      [
-        "[data-testid='btn-parse-cv']",
-        "[data-testid='parse-cv']",
-        "[data-action='parse-cv']",
-      ],
-      ["parse cv", "parse resume", "parse"]
-    );
-  }
-
-  // Confirm sections
-  if (t.includes("confirm")) {
-    return clickUi(
-      [
-        "[data-testid='btn-confirm-sections']",
-        "[data-testid='confirm-sections']",
-        "[data-action='confirm-sections']",
-      ],
-      ["confirm cv sections", "confirm sections", "confirm"]
-    );
-  }
-
-  // Optimize whole (only reachable when schemaDirty === false)
-  if (t.includes("optimize") || t.includes("one-click")) {
-    return clickUi(
-      [
-        "[data-testid='btn-optimize-whole']",
-        "[data-testid='optimize-whole']",
-        "[data-action='optimize-whole']",
-      ],
-      ["one-click optimize", "optimize whole", "optimize"]
-    );
-  }
-
-  return false;
-}
-
-  // ✅ NEW: centralized quick reply click handler (UI action first, fallback to send text)
+  // centralized click handler (UI action first, fallback to send text)
   const handleQuickReplyClick = async (q: string) => {
     if (busy) return;
 
     const handled = applyQuickReplyAction(q);
 
     if (handled) {
-      // keep minimal: optionally log the action into chat as an assistant hint
       setMessages((prev): ChatMsg[] => {
         const next = [...prev, msg("assistant", `OK — triggering: ${q}`)];
         return next.slice(-60);
@@ -431,8 +520,51 @@ function applyQuickReplyAction(label: string): boolean {
       return;
     }
 
-    // fallback: treat as user text
     await send(q);
+  };
+
+  // 🧩 NEW: render helper: actions first, fallback quickReplies
+  const renderActionsOrQuickReplies = (opts?: {
+    limit?: number;
+    compact?: boolean;
+    stopPropagation?: boolean;
+  }) => {
+    const limit = opts?.limit;
+    const compact = !!opts?.compact;
+    const stopPropagation = !!opts?.stopPropagation;
+
+    const items: Array<{ label: string }> =
+      uiActions && uiActions.length > 0
+        ? uiActions.map((a) => ({ label: a.label || a.key }))
+        : quickReplies.map((q) => ({ label: q }));
+
+    const shown = typeof limit === "number" ? items.slice(0, limit) : items;
+
+    if (!shown.length) return null;
+
+    return (
+      <div className={compact ? "mt-2 flex flex-wrap gap-2" : "mt-3 flex flex-wrap gap-2"}>
+        {shown.map((it, i) => (
+          <button
+            key={`${it.label}-${i}`}
+            type="button"
+            disabled={busy}
+            onClick={(e) => {
+              if (stopPropagation) e.stopPropagation();
+              handleQuickReplyClick(it.label);
+            }}
+            className={
+              compact
+                ? `rounded-lg px-3 py-1 text-[11px] font-semibold ${BTN_OUTLINE} disabled:opacity-50`
+                : `rounded-lg px-3 py-1.5 text-xs font-semibold ${BTN_OUTLINE} disabled:opacity-50`
+            }
+            title={it.label}
+          >
+            {it.label}
+          </button>
+        ))}
+      </div>
+    );
   };
 
   async function callChatApi(userText: string, historySnapshot: ChatMsg[]) {
@@ -490,9 +622,7 @@ function applyQuickReplyAction(label: string): boolean {
       current: {
         job_id: currentSchema?.job_id ?? "",
         jd_text: currentSchema?.jd_text ?? "",
-        sections: Array.isArray(currentSchema?.sections)
-          ? currentSchema.sections
-          : [],
+        sections: Array.isArray(currentSchema?.sections) ? currentSchema.sections : [],
       },
       state: {
         pending_requirements: pendingReqStr,
@@ -516,16 +646,17 @@ function applyQuickReplyAction(label: string): boolean {
       }
 
       if (!r.ok) {
-        const msg = (json?.error || json?.message || raw || `HTTP ${r.status}`)
+        const msgText = (json?.error || json?.message || raw || `HTTP ${r.status}`)
           .toString();
-        setNetError(msg);
-        setQuickReplies([]); // ✅ NEW: clear on error
+        setNetError(msgText);
+        setQuickReplies([]);
+        setUiActions([]); // 🧩 NEW: clear on error
         setMessages((prev) => {
           const next = [
             ...prev,
             {
               role: "assistant" as const,
-              content: "Agent service returned an error.\n" + `Error: ${msg}`,
+              content: "Agent service returned an error.\n" + `Error: ${msgText}`,
             },
           ];
           return next.slice(-60);
@@ -533,7 +664,6 @@ function applyQuickReplyAction(label: string): boolean {
         return;
       }
 
-      // ✅ NEW: reply fallback logic
       const assistantText = pickAssistantText(json);
       if (assistantText) {
         setMessages((prev): ChatMsg[] => {
@@ -542,8 +672,8 @@ function applyQuickReplyAction(label: string): boolean {
         });
       }
 
-      // ✅ NEW: quick replies rendering
       setQuickReplies(pickQuickReplies(json));
+      setUiActions(pickUiActions(json)); // 🧩 NEW: actions
 
       const pr =
         json?.pending_requirements ??
@@ -569,15 +699,16 @@ function applyQuickReplyAction(label: string): boolean {
         next_suggested_action: nsa,
       });
     } catch (e: any) {
-      const msg = (e?.message || String(e)).toString();
-      setNetError(msg);
-      setQuickReplies([]); // ✅ NEW: clear on exception
+      const msgText = (e?.message || String(e)).toString();
+      setNetError(msgText);
+      setQuickReplies([]);
+      setUiActions([]); // 🧩 NEW: clear on exception
       setMessages((prev) => {
         const next = [
           ...prev,
           {
             role: "assistant" as const,
-            content: "Agent service is unreachable.\n" + `Error: ${msg}`,
+            content: "Agent service is unreachable.\n" + `Error: ${msgText}`,
           },
         ];
         return next.slice(-60);
@@ -603,9 +734,9 @@ function applyQuickReplyAction(label: string): boolean {
 
     await callChatApi(trimmed, historySnapshot);
 
-    if (presentation === "dock" && !collapsed) {
-      onToggleCollapse?.();
-    }
+    // ✅ CHANGE (minimal): remove auto-minimize after each send.
+    // Previously:
+    // if (presentation === "dock" && !collapsed) onToggleCollapse?.();
   };
 
   /* =========================
@@ -667,23 +798,8 @@ function applyQuickReplyAction(label: string): boolean {
                 ))}
             </div>
 
-            {/* ✅ NEW: quick replies (dock expanded) */}
-            {quickReplies.length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {quickReplies.map((q, i) => (
-                  <button
-                    key={`${q}-${i}`}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleQuickReplyClick(q)}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
-                    title={q}
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            {/* actions first; fallback quickReplies */}
+            {renderActionsOrQuickReplies()}
           </div>
         ) : (
           <div
@@ -712,26 +828,8 @@ function applyQuickReplyAction(label: string): boolean {
               </div>
             </div>
 
-            {/* ✅ NEW: quick replies (dock collapsed) */}
-            {quickReplies.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {quickReplies.slice(0, 3).map((q, i) => (
-                  <button
-                    key={`${q}-${i}`}
-                    type="button"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleQuickReplyClick(q);
-                    }}
-                    className={`rounded-lg px-3 py-1 text-[11px] font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
-                    title={q}
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            {/* actions first; fallback quickReplies (limit to 3, compact) */}
+            {renderActionsOrQuickReplies({ limit: 3, compact: true, stopPropagation: true })}
           </div>
         )}
 
@@ -778,7 +876,7 @@ function applyQuickReplyAction(label: string): boolean {
     );
   }
 
-  // floating mode (unchanged)
+  // floating mode
   return (
     <div className="fixed bottom-4 right-4 z-50 w-[420px] max-w-[calc(100vw-2rem)]">
       <div className="rounded-2xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-200">
@@ -836,23 +934,8 @@ function applyQuickReplyAction(label: string): boolean {
                   </div>
                 ))}
 
-              {/* ✅ NEW: quick replies (floating) */}
-              {quickReplies.length > 0 ? (
-                <div className="pt-2 flex flex-wrap gap-2">
-                  {quickReplies.map((q, i) => (
-                    <button
-                      key={`${q}-${i}`}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleQuickReplyClick(q)}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${BTN_OUTLINE} disabled:opacity-50`}
-                      title={q}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              {/* actions first; fallback quickReplies (floating) */}
+              {renderActionsOrQuickReplies()}
             </div>
 
             <div className="border-t px-4 py-3">

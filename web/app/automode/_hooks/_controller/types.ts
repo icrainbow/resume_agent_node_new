@@ -22,7 +22,12 @@ export type Progress = {
   currentTitle?: string;
 };
 
-export type ExportLinks = { pdf?: string; docx?: string } | null;
+export type ExportLinks = {
+  pdf?: string;
+  docx?: string;
+  // Phase 4: Structured artifacts
+  artifacts?: Array<{ kind: string; filename: string; url: string }>;
+} | null;
 
 export type State = {
   // files / inputs

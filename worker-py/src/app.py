@@ -184,13 +184,22 @@ class ExportReq(BaseModel):
     base_name: Optional[str] = None
 
 
+class ExportArtifact(BaseModel):
+    kind: str  # "pdf" | "docx" | "md"
+    filename: str
+    url: str
+
+
 class ExportResp(BaseModel):
     ok: bool
     error: Optional[str] = None
+    # Legacy fields (backward compatibility)
     docx_path: Optional[str] = None
     pdf_path: Optional[str] = None
     docx_url: Optional[str] = None
     pdf_url: Optional[str] = None
+    # Phase 4: Structured artifacts with Next.js download URLs
+    artifacts: Optional[List[ExportArtifact]] = None
 
 
 # -----------------------------
@@ -1055,16 +1064,33 @@ def export(req: ExportReq, request: Request):
         create_word_document_from_markdown(md, str(docx_path))
         create_pdf_from_markdown(md, str(pdf_path))
 
+        # Legacy URLs (for worker's /files endpoint)
         base_url = str(request.base_url).rstrip("/")
         docx_url = f"{base_url}/files/{req.job_id}/{docx_name}"
         pdf_url = f"{base_url}/files/{req.job_id}/{pdf_name}"
+
+        # Phase 4: Relative URLs for Next.js /api/download proxy
+        # Browser will resolve these relative to Next.js origin
+        artifacts = [
+            ExportArtifact(
+                kind="docx",
+                filename=docx_name,
+                url=f"/api/download?job_id={req.job_id}&file={docx_name}",
+            ),
+            ExportArtifact(
+                kind="pdf",
+                filename=pdf_name,
+                url=f"/api/download?job_id={req.job_id}&file={pdf_name}",
+            ),
+        ]
 
         return ExportResp(
             ok=True,
             docx_path=str(docx_path),
             pdf_path=str(pdf_path),
-            docx_url=docx_url,
-            pdf_url=pdf_url,
+            docx_url=docx_url,  # Legacy
+            pdf_url=pdf_url,  # Legacy
+            artifacts=artifacts,  # Phase 4
         )
     except Exception as e:
         return ExportResp(ok=False, error=str(e))

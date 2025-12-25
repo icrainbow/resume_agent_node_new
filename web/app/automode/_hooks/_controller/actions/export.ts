@@ -31,6 +31,15 @@ export async function generateCvDownloadsAction(args: {
   });
 
   try {
+    // Phase 4: Client-side payload validation
+    if (!jid || !jid.trim()) {
+      throw new Error("Missing job_id. Cannot export without a job ID.");
+    }
+
+    if (!sectionsRef.current || sectionsRef.current.length === 0) {
+      throw new Error("No sections available. Please parse your resume first.");
+    }
+
     const payload = {
       job_id: jid,
       base_name: st.resumeFile?.name || "Resume",
@@ -46,8 +55,19 @@ export async function generateCvDownloadsAction(args: {
       export_pdf: true,
     };
 
+    // Validate filtered sections
     if (!payload.sections.length) {
-      throw new Error("No actionable sections to export.");
+      throw new Error("No actionable sections to export. All sections are empty or are groups.");
+    }
+
+    // Validate each section has required fields
+    for (const section of payload.sections) {
+      if (!section.id || !section.title) {
+        throw new Error(`Section missing id or title: ${JSON.stringify(section).substring(0, 100)}`);
+      }
+      if (!section.text || !section.text.trim()) {
+        throw new Error(`Section "${section.title}" has no text content.`);
+      }
     }
 
     const { status, json } = await fetchJsonDebug<ExportResp>(
@@ -70,16 +90,39 @@ export async function generateCvDownloadsAction(args: {
       throw new Error((data?.error || `Export failed (HTTP ${status})`) + details);
     }
 
-    const pdf = (data as any).pdf_url?.toString() || "";
-    const docx = (data as any).docx_url?.toString() || "";
-    if (!pdf || !docx) {
-      throw new Error("Export API returned missing pdf_url/docx_url.");
+    // Phase 4: Prefer artifacts array, fallback to legacy pdf_url/docx_url
+    let exportLinks: { pdf?: string; docx?: string; artifacts?: any[] } = {};
+
+    if (data.artifacts && data.artifacts.length > 0) {
+      // Use Phase 4 artifacts
+      const pdfArtifact = data.artifacts.find((a) => a.kind === "pdf");
+      const docxArtifact = data.artifacts.find((a) => a.kind === "docx");
+
+      exportLinks = {
+        pdf: pdfArtifact?.url,
+        docx: docxArtifact?.url,
+        artifacts: data.artifacts,
+      };
+
+      if (!exportLinks.pdf || !exportLinks.docx) {
+        throw new Error("Export succeeded but missing PDF or DOCX artifact.");
+      }
+    } else {
+      // Fallback to legacy fields
+      const pdf = data.pdf_url?.toString() || "";
+      const docx = data.docx_url?.toString() || "";
+
+      if (!pdf || !docx) {
+        throw new Error("Export API returned missing pdf_url/docx_url.");
+      }
+
+      exportLinks = { pdf, docx };
     }
 
     dispatch({
       type: "SET",
       patch: {
-        exportLinks: { pdf, docx },
+        exportLinks,
         notice: `CV generated. Download links are ready. job_id=${jid}`,
       },
     });

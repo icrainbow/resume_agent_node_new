@@ -35,11 +35,27 @@ export type Section = {
     url?: string;
   };
   
+  export type ExportArtifact = {
+    kind: "pdf" | "docx" | "md";
+    filename: string;
+    url: string;
+  };
+
   export type ExportResp = {
     ok: boolean;
     error?: string | null;
+    // Legacy fields (backward compatibility)
     pdf_url?: string;
     docx_url?: string;
+    // New structured artifacts (Phase 4)
+    artifacts?: ExportArtifact[];
+    // Dev-only debugging (Phase 4)
+    debug?: {
+      job_id?: string;
+      sections_count?: number;
+      elapsed_ms?: number;
+      worker_status?: number;
+    };
   };
   
   export type ParseResp = {

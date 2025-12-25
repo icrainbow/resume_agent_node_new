@@ -1,0 +1,100 @@
+// web/prisma/schema.prisma
+// Phase 5 PR1: PostgreSQL schema for Resume Agent
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// B2C model: owner_user_id NOT NULL, tenant_id NULLABLE
+model Job {
+  id                 String    @id @default(uuid()) @db.Uuid
+  owner_user_id      String    @db.VarChar(255)
+  tenant_id          String?   @db.VarChar(255)
+
+  // Core data
+  resume_filename    String?   @db.VarChar(512)
+  resume_blob_path   String?   @db.VarChar(1024)
+  schema_filename    String?   @db.VarChar(512)
+  schema_blob_path   String?   @db.VarChar(1024)
+  jd_filename        String?   @db.VarChar(512)
+  jd_blob_path       String?   @db.VarChar(1024)
+  jd_text            String?   @db.Text
+
+  current_schema     Json?     @db.JsonB
+  sections           Json?     @db.JsonB  // Array<Section>
+
+  // Gates
+  cv_sections_confirmed Boolean @default(false)
+  schema_dirty          Boolean @default(false)
+
+  // Metadata
+  created_at         DateTime  @default(now()) @db.Timestamptz
+  updated_at         DateTime  @updatedAt @db.Timestamptz
+
+  // Relations
+  events             JobEvent[]
+  tasks              Task[]
+
+  @@index([owner_user_id, created_at(sort: Desc)])
+  @@index([tenant_id, created_at(sort: Desc)])
+}
+
+model JobEvent {
+  id         BigInt    @id @default(autoincrement())
+  job_id     String    @db.Uuid
+  trace_id   String?   @db.Uuid
+  event_type String    @db.VarChar(64)  // "parse", "optimize", "export", etc.
+  payload    Json?     @db.JsonB
+  created_at DateTime  @default(now()) @db.Timestamptz
+
+  job        Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
+
+  @@index([job_id, created_at(sort: Desc)])
+  @@index([trace_id])
+}
+
+model Task {
+  id              String    @id @default(uuid()) @db.Uuid
+  job_id          String    @db.Uuid
+  idempotency_key String    @unique @db.Uuid
+  task_type       String    @db.VarChar(64)  // "export", "optimize_all"
+  status          String    @db.VarChar(32)  // "pending", "running", "completed", "failed"
+
+  // Input (snapshot at creation time)
+  input_payload   Json      @db.JsonB
+
+  // Output (populated on completion)
+  output_payload  Json?     @db.JsonB
+  error_message   String?   @db.Text
+
+  // Lifecycle
+  heartbeat_at    DateTime? @db.Timestamptz
+  started_at      DateTime? @db.Timestamptz
+  completed_at    DateTime? @db.Timestamptz
+  created_at      DateTime  @default(now()) @db.Timestamptz
+
+  job             Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
+
+  @@index([status, created_at(sort: Asc)])  // Worker polling
+  @@index([job_id, created_at(sort: Desc)])
+  @@index([idempotency_key])
+}
+
+model ExportVersion {
+  id            BigInt    @id @default(autoincrement())
+  job_id        String    @db.Uuid
+  version       Int       // Auto-increment per job
+
+  pdf_blob_path String?   @db.VarChar(1024)
+  docx_blob_path String?  @db.VarChar(1024)
+
+  created_at    DateTime  @default(now()) @db.Timestamptz
+
+  @@unique([job_id, version])
+  @@index([job_id, version(sort: Desc)])
+}

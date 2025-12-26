@@ -1,5 +1,5 @@
 // web/prisma/schema.prisma
-// Phase 5 PR1: PostgreSQL schema for Resume Agent
+// Phase 5 PR1: PostgreSQL schema for Resume Agent (REVISED v2)
 
 generator client {
   provider = "prisma-client-js"
@@ -7,7 +7,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // B2C model: owner_user_id NOT NULL, tenant_id NULLABLE
@@ -39,31 +38,39 @@ model Job {
   // Relations
   events             JobEvent[]
   tasks              Task[]
+  artifacts          Artifact[]
+  artifact_counters  ArtifactCounter[]
+  latest_artifacts   JobArtifactLatest[]
 
   @@index([owner_user_id, created_at(sort: Desc)])
   @@index([tenant_id, created_at(sort: Desc)])
 }
 
 model JobEvent {
-  id         BigInt    @id @default(autoincrement())
-  job_id     String    @db.Uuid
-  trace_id   String?   @db.Uuid
-  event_type String    @db.VarChar(64)  // "parse", "optimize", "export", etc.
-  payload    Json?     @db.JsonB
-  created_at DateTime  @default(now()) @db.Timestamptz
+  id            BigInt    @id @default(autoincrement())
+  job_id        String    @db.Uuid
+  owner_user_id String    @db.VarChar(255)
+  trace_id      String?   @db.Uuid
+  event_type    String    @db.VarChar(64)  // "parse", "optimize", "export", etc.
+  payload       Json?     @db.JsonB
+  created_at    DateTime  @default(now()) @db.Timestamptz
 
-  job        Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  job           Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
 
   @@index([job_id, created_at(sort: Desc)])
   @@index([trace_id])
+  @@index([owner_user_id, event_type, created_at(sort: Desc)])
 }
 
 model Task {
   id              String    @id @default(uuid()) @db.Uuid
   job_id          String    @db.Uuid
-  idempotency_key String    @unique @db.Uuid
+  owner_user_id   String    @db.VarChar(255)
+  idempotency_key String    @db.Uuid
   task_type       String    @db.VarChar(64)  // "export", "optimize_all"
-  status          String    @db.VarChar(32)  // "pending", "running", "completed", "failed"
+
+  status          String    @db.VarChar(32) @default("queued")  // "queued", "running", "completed", "failed"
+  stage           String?   @db.VarChar(64)
 
   // Input (snapshot at creation time)
   input_payload   Json      @db.JsonB
@@ -72,29 +79,73 @@ model Task {
   output_payload  Json?     @db.JsonB
   error_message   String?   @db.Text
 
+  // Retry tracking
+  attempt_count   Int       @default(0)
+  max_attempts    Int       @default(3)
+  last_error_at   DateTime? @db.Timestamptz
+
   // Lifecycle
-  heartbeat_at    DateTime? @db.Timestamptz
+  created_at      DateTime  @default(now()) @db.Timestamptz
+  updated_at      DateTime  @updatedAt @db.Timestamptz
   started_at      DateTime? @db.Timestamptz
   completed_at    DateTime? @db.Timestamptz
-  created_at      DateTime  @default(now()) @db.Timestamptz
+  timeout_at      DateTime? @db.Timestamptz
 
   job             Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  artifacts       Artifact[]
 
-  @@index([status, created_at(sort: Asc)])  // Worker polling
+  @@unique([owner_user_id, idempotency_key])
   @@index([job_id, created_at(sort: Desc)])
-  @@index([idempotency_key])
+  @@index([owner_user_id, status, created_at(sort: Desc)])
+  @@index([timeout_at])
 }
 
-model ExportVersion {
-  id            BigInt    @id @default(autoincrement())
-  job_id        String    @db.Uuid
-  version       Int       // Auto-increment per job
+model Artifact {
+  id              BigInt    @id @default(autoincrement())
+  job_id          String    @db.Uuid
+  owner_user_id   String    @db.VarChar(255)
+  task_id         String?   @db.Uuid
 
-  pdf_blob_path String?   @db.VarChar(1024)
-  docx_blob_path String?  @db.VarChar(1024)
+  kind            String    @db.VarChar(32)  // "pdf", "docx", "zip"
+  version         Int
+  is_zip          Boolean   @default(false)
 
-  created_at    DateTime  @default(now()) @db.Timestamptz
+  blob_path       String    @db.VarChar(1024)
+  filename        String    @db.VarChar(512)
+  file_size_bytes BigInt?
+  content_type    String?   @db.VarChar(128)
 
-  @@unique([job_id, version])
-  @@index([job_id, version(sort: Desc)])
+  created_at      DateTime  @default(now()) @db.Timestamptz
+  expires_at      DateTime? @db.Timestamptz
+
+  job             Job       @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  task            Task?     @relation(fields: [task_id], references: [id], onDelete: SetNull)
+
+  @@unique([job_id, kind, version])
+  @@index([owner_user_id, kind, created_at(sort: Desc)])
+  @@index([expires_at])
+}
+
+// Atomic version counter per (job_id, kind)
+model ArtifactCounter {
+  job_id       String @db.Uuid
+  kind         String @db.VarChar(32)
+  next_version Int    @default(1)
+
+  job          Job    @relation(fields: [job_id], references: [id], onDelete: Cascade)
+
+  @@id([job_id, kind])
+}
+
+// Latest artifact pointer per (job_id, kind)
+model JobArtifactLatest {
+  job_id             String   @db.Uuid
+  kind               String   @db.VarChar(32)
+  latest_artifact_id BigInt
+  latest_version     Int
+  updated_at         DateTime @updatedAt @db.Timestamptz
+
+  job                Job      @relation(fields: [job_id], references: [id], onDelete: Cascade)
+
+  @@id([job_id, kind])
 }

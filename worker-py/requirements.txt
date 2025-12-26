@@ -7,3 +7,5 @@ openai
 pypdf
 reportlab>=4.0
 langchain>=0.0.208
+azure-storage-blob>=12.25.0
+azure-identity>=1.19.0

@@ -7,77 +7,115 @@ export class TaskRepository {
   constructor(private prisma: PrismaClient) {}
 
   /**
-   * Create a new task
+   * Create a new task (idempotency scoped to owner)
    */
   async create(data: {
     job_id: string;
+    owner_user_id: string;
     idempotency_key: string;
     task_type: string;
     input_payload: any;
+    timeout_minutes?: number;
   }): Promise<Task> {
+    const timeout_at = new Date(Date.now() + (data.timeout_minutes || 5) * 60 * 1000);
+
     return await this.prisma.task.create({
       data: {
         job_id: data.job_id,
+        owner_user_id: data.owner_user_id,
         idempotency_key: data.idempotency_key,
         task_type: data.task_type,
-        status: "pending",
+        status: "queued",
         input_payload: data.input_payload,
+        timeout_at,
       },
     });
   }
 
   /**
-   * Find task by idempotency key (for deduplication)
+   * Find task by idempotency key (with owner isolation)
    */
-  async findByIdempotencyKey(key: string): Promise<Task | null> {
+  async findByIdempotencyKey(
+    owner_user_id: string,
+    idempotency_key: string
+  ): Promise<Task | null> {
     return await this.prisma.task.findUnique({
-      where: { idempotency_key: key },
+      where: {
+        owner_user_id_idempotency_key: {
+          owner_user_id,
+          idempotency_key,
+        },
+      },
     });
   }
 
   /**
-   * Find task by ID
+   * Find task by ID (with owner isolation)
    */
-  async findById(id: string): Promise<Task | null> {
-    return await this.prisma.task.findUnique({
-      where: { id },
+  async findById(id: string, owner_user_id: string): Promise<Task | null> {
+    return await this.prisma.task.findFirst({
+      where: {
+        id,
+        owner_user_id,
+      },
     });
   }
 
   /**
-   * Mark task as running and set started_at
+   * Mark task as running (with owner isolation)
    */
-  async markRunning(id: string): Promise<void> {
-    await this.prisma.task.update({
-      where: { id },
+  async markRunning(id: string, owner_user_id: string): Promise<boolean> {
+    const result = await this.prisma.task.updateMany({
+      where: {
+        id,
+        owner_user_id,
+        status: "queued", // Only transition from queued
+      },
       data: {
         status: "running",
         started_at: new Date(),
-        heartbeat_at: new Date(),
+        stage: "running",
       },
     });
+
+    return result.count > 0;
   }
 
   /**
-   * Update task heartbeat (worker alive signal)
+   * Update task stage (with owner isolation)
    */
-  async updateHeartbeat(id: string): Promise<void> {
-    await this.prisma.task.update({
-      where: { id },
+  async updateStage(
+    id: string,
+    owner_user_id: string,
+    stage: string
+  ): Promise<void> {
+    await this.prisma.task.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
-        heartbeat_at: new Date(),
+        stage,
       },
     });
   }
 
   /**
-   * Complete task with output
+   * Complete task with output (with owner isolation)
    */
-  async complete(id: string, output: any): Promise<void> {
-    await this.prisma.task.update({
-      where: { id },
+  async complete(
+    id: string,
+    owner_user_id: string,
+    output: any
+  ): Promise<void> {
+    await this.prisma.task.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         status: "completed",
+        stage: "completed",
         output_payload: output,
         completed_at: new Date(),
       },
@@ -85,38 +123,106 @@ export class TaskRepository {
   }
 
   /**
-   * Fail task with error message
+   * Fail task with error message (with owner isolation)
    */
-  async fail(id: string, error: string): Promise<void> {
-    await this.prisma.task.update({
-      where: { id },
+  async fail(
+    id: string,
+    owner_user_id: string,
+    error: string
+  ): Promise<void> {
+    await this.prisma.task.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         status: "failed",
         error_message: error,
         completed_at: new Date(),
+        last_error_at: new Date(),
       },
     });
   }
 
   /**
-   * Find pending tasks for worker polling
+   * Increment attempt count and optionally requeue (with owner isolation)
    */
-  async findPendingTasks(limit: number = 10): Promise<Task[]> {
+  async incrementAttempt(
+    id: string,
+    owner_user_id: string,
+    error: string,
+    requeue: boolean
+  ): Promise<void> {
+    const task = await this.findById(id, owner_user_id);
+    if (!task) return;
+
+    const newAttemptCount = task.attempt_count + 1;
+    const shouldFail = newAttemptCount >= task.max_attempts;
+
+    await this.prisma.task.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
+      data: {
+        attempt_count: newAttemptCount,
+        last_error_at: new Date(),
+        error_message: error,
+        status: shouldFail ? "failed" : requeue ? "queued" : task.status,
+        completed_at: shouldFail ? new Date() : null,
+      },
+    });
+  }
+
+  /**
+   * Find all tasks for a job (with owner isolation)
+   */
+  async findByJobId(
+    job_id: string,
+    owner_user_id: string,
+    limit: number = 50
+  ): Promise<Task[]> {
     return await this.prisma.task.findMany({
-      where: { status: "pending" },
-      orderBy: { created_at: "asc" },
+      where: {
+        job_id,
+        owner_user_id,
+      },
+      orderBy: { created_at: "desc" },
       take: limit,
     });
   }
 
   /**
-   * Find all tasks for a job (for debugging)
+   * Check for stale tasks (updated_at not progressing)
+   * Returns tasks that are running but haven't updated in threshold minutes
    */
-  async findByJobId(job_id: string, limit: number = 50): Promise<Task[]> {
+  async findStaleTasks(thresholdMinutes: number = 2): Promise<Task[]> {
+    const staleThreshold = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
     return await this.prisma.task.findMany({
-      where: { job_id },
-      orderBy: { created_at: "desc" },
-      take: limit,
+      where: {
+        status: "running",
+        updated_at: {
+          lt: staleThreshold,
+        },
+      },
+    });
+  }
+
+  /**
+   * Mark stale task as failed
+   */
+  async markStaleAsFailed(id: string): Promise<void> {
+    await this.prisma.task.updateMany({
+      where: {
+        id,
+        status: "running",
+      },
+      data: {
+        status: "failed",
+        error_message: "Task timed out (no progress for 2 minutes)",
+        completed_at: new Date(),
+      },
     });
   }
 }

@@ -123,7 +123,7 @@ export default function ArchitectChat(props: ArchitectChatProps) {
   // 🧩 NEW: structured actions from /api/agent (optional)
   const [uiActions, setUiActions] = useState<UiAction[]>([]);
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<number | null>(null);
 
   const clearHoverTimer = () => {

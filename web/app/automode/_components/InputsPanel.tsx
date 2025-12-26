@@ -5,9 +5,9 @@ import { useMemo } from "react";
 
 type Props = {
   // refs (owned by page)
-  resumeInputRef: React.RefObject<HTMLInputElement | null>;
-  schemaInputRef: React.RefObject<HTMLInputElement | null>;
-  jdInputRef: React.RefObject<HTMLInputElement | null>;
+  resumeInputRef: React.RefObject<HTMLInputElement>;
+  schemaInputRef: React.RefObject<HTMLInputElement>;
+  jdInputRef: React.RefObject<HTMLInputElement>;
 
   // files + setters (owned by page)
   resumeFile: File | null;

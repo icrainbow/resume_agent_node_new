@@ -21,9 +21,10 @@ import ArchitectChat from "@/components/ArchitectChat";
 import { useAutoModeController } from "./_hooks/_controller/useAutoModeController";
 
 export default function Page() {
-  const resumeInputRef = useRef<HTMLInputElement | null>(null);
-  const schemaInputRef = useRef<HTMLInputElement | null>(null);
-  const jdInputRef = useRef<HTMLInputElement | null>(null);
+  const resumeInputRef = useRef<HTMLInputElement>(null);  
+  const schemaInputRef = useRef<HTMLInputElement>(null);
+  const jdInputRef = useRef<HTMLInputElement>(null);
+
   const previewAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // ✅ Debug panel should be hidden by default
@@ -283,9 +284,9 @@ export default function Page() {
   }, []);
 
   const inputs = {
-    resumeInputRef: ctrl.resumeInputRef,
-    schemaInputRef: ctrl.schemaInputRef,
-    jdInputRef: ctrl.jdInputRef,
+    resumeInputRef,
+    schemaInputRef,
+    jdInputRef,
 
     resumeFile: ctrl.resumeFile,
     setResumeFile: ctrl.setResumeFile,

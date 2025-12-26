@@ -23,20 +23,30 @@ export class JobRepository {
   }
 
   /**
-   * Find job by ID
+   * Find job by ID (with owner isolation)
    */
-  async findById(id: string): Promise<Job | null> {
-    return await this.prisma.job.findUnique({
-      where: { id },
+  async findById(id: string, owner_user_id: string): Promise<Job | null> {
+    return await this.prisma.job.findFirst({
+      where: {
+        id,
+        owner_user_id,
+      },
     });
   }
 
   /**
-   * Update sections for a job
+   * Update sections for a job (with owner isolation)
    */
-  async updateSections(id: string, sections: Section[]): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async updateSections(
+    id: string,
+    owner_user_id: string,
+    sections: Section[]
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         sections: sections as any, // Prisma JSON type
       },
@@ -44,11 +54,14 @@ export class JobRepository {
   }
 
   /**
-   * Confirm sections (set cv_sections_confirmed = true, schema_dirty = false)
+   * Confirm sections (with owner isolation)
    */
-  async confirmSections(id: string): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async confirmSections(id: string, owner_user_id: string): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         cv_sections_confirmed: true,
         schema_dirty: false,
@@ -57,11 +70,18 @@ export class JobRepository {
   }
 
   /**
-   * Mark schema as dirty/clean
+   * Mark schema as dirty/clean (with owner isolation)
    */
-  async markSchemaDirty(id: string, dirty: boolean): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async markSchemaDirty(
+    id: string,
+    owner_user_id: string,
+    dirty: boolean
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         schema_dirty: dirty,
       },
@@ -69,11 +89,19 @@ export class JobRepository {
   }
 
   /**
-   * Upload resume file metadata
+   * Upload resume file metadata (with owner isolation)
    */
-  async uploadResume(id: string, filename: string, blob_path: string): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async uploadResume(
+    id: string,
+    owner_user_id: string,
+    filename: string,
+    blob_path: string
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         resume_filename: filename,
         resume_blob_path: blob_path,
@@ -82,11 +110,19 @@ export class JobRepository {
   }
 
   /**
-   * Upload schema file metadata
+   * Upload schema file metadata (with owner isolation)
    */
-  async uploadSchema(id: string, filename: string, blob_path: string): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async uploadSchema(
+    id: string,
+    owner_user_id: string,
+    filename: string,
+    blob_path: string
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         schema_filename: filename,
         schema_blob_path: blob_path,
@@ -95,11 +131,20 @@ export class JobRepository {
   }
 
   /**
-   * Upload JD file metadata and text
+   * Upload JD file metadata and text (with owner isolation)
    */
-  async uploadJD(id: string, filename: string, blob_path: string, text: string): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async uploadJD(
+    id: string,
+    owner_user_id: string,
+    filename: string,
+    blob_path: string,
+    text: string
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         jd_filename: filename,
         jd_blob_path: blob_path,
@@ -124,6 +169,7 @@ export class JobRepository {
    */
   async logEvent(
     job_id: string,
+    owner_user_id: string,
     data: {
       event_type: string;
       trace_id?: string | null;
@@ -133,6 +179,7 @@ export class JobRepository {
     await this.prisma.jobEvent.create({
       data: {
         job_id,
+        owner_user_id,
         event_type: data.event_type,
         trace_id: data.trace_id || null,
         payload: data.payload || {},
@@ -141,11 +188,18 @@ export class JobRepository {
   }
 
   /**
-   * Update current schema
+   * Update current schema (with owner isolation)
    */
-  async updateSchema(id: string, schema: any): Promise<void> {
-    await this.prisma.job.update({
-      where: { id },
+  async updateSchema(
+    id: string,
+    owner_user_id: string,
+    schema: any
+  ): Promise<void> {
+    await this.prisma.job.updateMany({
+      where: {
+        id,
+        owner_user_id,
+      },
       data: {
         current_schema: schema,
       },

@@ -41,3 +41,21 @@ worker-py/outputs
 
 # OS
 .DS_Store
+
+# local git backups
+.git.backup.*/
+
+# local corrupt backups
+*.corrupt.*
+
+# local trash
+web/_trash_configs/
+
+# local backups
+*.bak.*
+
+# local backups / trash
+.git.backup.*/
+*.corrupt.*
+*.bak.*
+web/_trash_configs/
